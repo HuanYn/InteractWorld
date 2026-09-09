@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import shutil
 import sys
 import time
 from collections.abc import Iterable, Mapping
@@ -34,6 +35,7 @@ from training.longforcing_lite import (
     validate_backend,
 )
 from training.models.lora import load_trainable_state_dict, trainable_state_dict
+from training.paths import project_root
 from training.runtime import (
     CheckpointManager,
     ThroughputTracker,
@@ -284,6 +286,80 @@ def _iterator_at_micro_batch(loader: Iterable[Any], consumed: int):
     return iterator
 
 
+def _objective_counts_at_micro_batch(consumed: int) -> dict[str, int]:
+    """Restore cumulative counters for the fixed one-in-four replay schedule."""
+    if consumed < 0:
+        raise ValueError("consumed micro-batches cannot be negative")
+    replay = consumed // 4
+    return {"longforcing": consumed - replay, "flowmatch_replay": replay}
+
+
+def _prepare_resume_attempt(output_dir: Path, resume: str | Path, step: int) -> dict[str, Any]:
+    """Preserve prior attempt evidence before resuming its saved optimizer step.
+
+    The active metric series follows the checkpoint's lineage, while the full
+    failed-attempt series remains byte-for-byte available in the archive.
+    Checkpoint files, including the historical loss-selected best, are untouched.
+    """
+    output_dir = output_dir.resolve()
+    checkpoint = Path(resume).resolve()
+    if project_root().resolve() not in output_dir.parents:
+        raise ValueError("resume evidence must stay below the configured project root")
+    if checkpoint.parent != output_dir / "checkpoints" or not checkpoint.is_file():
+        raise ValueError("resume checkpoint must be a file in this run's checkpoints directory")
+    metadata_path = output_dir / "run_metadata.json"
+    metrics_path = output_dir / "metrics.jsonl"
+    attempts = output_dir / "attempts"
+    if step < 0 or not metadata_path.is_file():
+        raise ValueError("resume requires a nonnegative step and existing run_metadata.json")
+    if any(path.is_symlink() for path in (metadata_path, metrics_path, attempts)):
+        raise ValueError("refusing symlinked resume evidence paths")
+
+    retained: list[bytes] = []
+    removed_steps: list[int] = []
+    previous = 0
+    if metrics_path.exists():
+        for line in metrics_path.read_bytes().splitlines(keepends=True):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            record_step = record.get("step")
+            if type(record_step) is not int or record_step <= previous:
+                raise ValueError("resume metrics must have strictly increasing positive steps")
+            previous = record_step
+            if record_step <= step:
+                retained.append(line)
+            else:
+                removed_steps.append(record_step)
+
+    stamp = time.time_ns()
+    archive = attempts / f"before-resume-step-{step:07d}-{stamp}"
+    archive.mkdir(parents=True, exist_ok=False)
+    archived_files = {}
+    for path in (metadata_path, metrics_path):
+        if path.is_file():
+            target = archive / path.name
+            shutil.copy2(path, target)
+            archived_files[path.name] = {"path": str(target), "sha256": sha256_file(target)}
+    receipt = {
+        "schema_version": 1,
+        "resume_checkpoint": str(checkpoint),
+        "resume_step": step,
+        "archive_dir": str(archive),
+        "archived_files": archived_files,
+        "steps_removed_from_active_metrics": removed_steps,
+        "checkpoint_files_modified": False,
+        "created_unix": time.time(),
+    }
+    (archive / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+    if removed_steps:
+        temporary = output_dir / f"metrics.resume-{stamp}.tmp"
+        with temporary.open("xb") as stream:
+            stream.write(b"".join(retained))
+        temporary.replace(metrics_path)
+    return receipt
+
+
 def launch(
     config: LongForcingConfig,
     config_path: str | Path,
@@ -342,6 +418,7 @@ def launch(
 
     teacher_dict, causal_dict = teacher_lineage.as_dict(), causal_lineage.as_dict()
     step = consumed = 0
+    resume_attempt = None
     if resume:
         step, consumed = _restore_resume(
             resume,
@@ -352,6 +429,7 @@ def launch(
             causal_lineage=causal_dict,
             config=config,
         )
+        resume_attempt = _prepare_resume_attempt(output_dir, resume, step)
     metadata = {
         "command": sys.argv,
         "stage": STAGE_NAME,
@@ -364,6 +442,7 @@ def launch(
         "parent_causal": causal_dict,
         "gpu_state": gpu_snapshot.as_dict(),
         "started_unix": time.time(),
+        "resume_attempt": resume_attempt,
     }
     (output_dir / "run_metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
@@ -386,7 +465,7 @@ def launch(
     tracker = ThroughputTracker.start()
     backend.student.zero_grad(set_to_none=True)
     accumulated_loss = 0.0
-    objective_counts = {"longforcing": 0, "flowmatch_replay": 0}
+    objective_counts = _objective_counts_at_micro_batch(consumed)
     last_saved_step = step
     latest_metrics: dict[str, Any] = {"loss": float("inf")}
     while step < config.training.max_steps:

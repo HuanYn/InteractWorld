@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,8 @@ from torch import nn
 
 from train_longforcing_lite import (
     _checkpoint_payload,
+    _objective_counts_at_micro_batch,
+    _prepare_resume_attempt,
     _require_launch_factories,
     _restore_resume,
     validation_report,
@@ -26,7 +29,7 @@ from training.longforcing_lite import (
     longforcing_lite_loss,
     rgb_frames_for_blocks,
 )
-from training.runtime import sha256_file
+from training.runtime import append_jsonl, sha256_file
 
 ROOT = Path(__file__).parents[1]
 CONFIG_PATH = ROOT / "configs" / "train" / "longforcing_lite_v1.yaml"
@@ -342,3 +345,74 @@ def test_checkpoint_resume_restores_exact_microbatch_and_schedule_state(tmp_path
             causal_lineage=causal,
             config=config,
         )
+
+
+def test_resume_objective_counters_continue_from_consumed_micro_batches() -> None:
+    assert _objective_counts_at_micro_batch(0) == {"longforcing": 0, "flowmatch_replay": 0}
+    counts = _objective_counts_at_micro_batch(160)
+    assert counts == {"longforcing": 120, "flowmatch_replay": 40}
+    for consumed in range(160, 168):
+        counts["flowmatch_replay" if is_flowmatch_replay(consumed) else "longforcing"] += 1
+    assert counts == _objective_counts_at_micro_batch(168)
+    assert counts == {"longforcing": 126, "flowmatch_replay": 42}
+
+
+def test_resume_archives_full_attempt_and_trims_only_active_metric_tail(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("INTERACTWORLD_ROOT", str(tmp_path))
+    tmp_path = tmp_path / "run"
+    tmp_path.mkdir()
+    metadata = b'{"started_unix": 123, "attempt": "old"}'
+    original = b"".join(json.dumps({"step": step, "loss": 1 / step}).encode() + b"\n"
+                        for step in range(1, 26))
+    (tmp_path / "run_metadata.json").write_bytes(metadata)
+    (tmp_path / "metrics.jsonl").write_bytes(original)
+    checkpoint = tmp_path / "checkpoints" / "step-0000020.pt"
+    checkpoint.parent.mkdir()
+    checkpoint.write_bytes(b"saved step 20")
+    best = checkpoint.with_name("best.pt")
+    best.write_bytes(b"historical best step 20")
+    rng = torch.get_rng_state().clone()
+    result = _prepare_resume_attempt(tmp_path, checkpoint, 20)
+    assert torch.equal(torch.get_rng_state(), rng)
+    archive = Path(result["archive_dir"])
+    assert (archive / "run_metadata.json").read_bytes() == metadata
+    assert (archive / "metrics.jsonl").read_bytes() == original
+    assert (tmp_path / "run_metadata.json").read_bytes() == metadata
+    active = (tmp_path / "metrics.jsonl").read_bytes()
+    assert active == b"".join(original.splitlines(keepends=True)[:20])
+    assert result["steps_removed_from_active_metrics"] == [21, 22, 23, 24, 25]
+    assert result["checkpoint_files_modified"] is False
+    assert checkpoint.read_bytes() == b"saved step 20"
+    assert best.read_bytes() == b"historical best step 20"
+    for entry in result["archived_files"].values():
+        assert sha256_file(entry["path"]) == entry["sha256"]
+    second = _prepare_resume_attempt(tmp_path, checkpoint, 20)
+    assert second["archive_dir"] != result["archive_dir"]
+    assert second["steps_removed_from_active_metrics"] == []
+    assert (archive / "metrics.jsonl").read_bytes() == original
+    for step in range(21, 26):
+        append_jsonl(tmp_path / "metrics.jsonl", {"step": step, "loss": 0.1})
+    active_steps = [json.loads(line)["step"] for line in
+                    (tmp_path / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert active_steps == list(range(1, 26))
+    assert (archive / "metrics.jsonl").read_bytes() == original
+
+
+def test_resume_refuses_ambiguous_metric_order_before_changing_evidence(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("INTERACTWORLD_ROOT", str(tmp_path))
+    tmp_path = tmp_path / "run"
+    tmp_path.mkdir()
+    (tmp_path / "run_metadata.json").write_text("{}", encoding="utf-8")
+    original = b'{"step":20}\n{"step":21}\n{"step":20}\n'
+    (tmp_path / "metrics.jsonl").write_bytes(original)
+    checkpoint = tmp_path / "checkpoints" / "step-0000020.pt"
+    checkpoint.parent.mkdir()
+    checkpoint.write_bytes(b"saved step 20")
+    with pytest.raises(ValueError, match="strictly increasing"):
+        _prepare_resume_attempt(tmp_path, checkpoint, 20)
+    assert (tmp_path / "metrics.jsonl").read_bytes() == original
+    assert not (tmp_path / "attempts").exists()
+    monkeypatch.setenv("INTERACTWORLD_ROOT", str(tmp_path / "another-project"))
+    with pytest.raises(ValueError, match="configured project root"):
+        _prepare_resume_attempt(tmp_path, checkpoint, 20)
+    assert not (tmp_path / "attempts").exists()

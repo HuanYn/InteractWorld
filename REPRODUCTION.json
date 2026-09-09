@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "beba32e1400df3d7e0e29dd314b3792bf9294c86",
+  "source_revision": "1e1da145c863defe90be958bddbb720054186a56",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,8 +30,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "1e1a294fda097c55493586c93cea8156c8dadcfe2157ac3da7e5b432980d6d67",
-      "bytes": 11205,
+      "sha256": "f6a79cee4a9a8e581bf47fb8f52a618dbff3e4a6bf622aede845f132f42dd687",
+      "bytes": 11413,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -194,6 +194,11 @@
       "bytes": 12425,
       "source_path": "tests/test_causal_tf.py"
     },
+    "tests/test_compiled_flex.py": {
+      "sha256": "f597a6a20228f04bc876c7c92e6f60186f86b1fec02ab99bf3bb3437353bab57",
+      "bytes": 3873,
+      "source_path": "tests/test_compiled_flex.py"
+    },
     "tests/test_configure_reproduction.py": {
       "sha256": "da513887d7b9070944302dc5af4b60217220fd586ce3dabb81b90ac71ae1309b",
       "bytes": 6232,
@@ -210,8 +215,8 @@
       "source_path": "tests/test_input_header.py"
     },
     "tests/test_longforcing_lite.py": {
-      "sha256": "66edd2cb796939306ecfb2ad194d05ae0517eae68f568b8a502b995c3d80e092",
-      "bytes": 12520,
+      "sha256": "523bca89a3b8e6eeb5c2049dafd3ddfc1d0d133d3a895a5b4fa74763c2351f01",
+      "bytes": 16459,
       "source_path": "tests/test_longforcing_lite.py"
     },
     "tests/test_package_abot_demo.py": {
@@ -250,8 +255,8 @@
       "source_path": "train_causal_teacher_forcing.py"
     },
     "train_longforcing_lite.py": {
-      "sha256": "e3ae3ef5258adccc173c65047ae5ed38edb92ca1e93053a776f832cd94823057",
-      "bytes": 20040,
+      "sha256": "b64eabdb87d67131c2e1977702dc6ee4a0387d2b662c2b249c32aa14b8cd0ecf",
+      "bytes": 23618,
       "source_path": "train_longforcing_lite.py"
     },
     "training/causal_tf.py": {
@@ -405,9 +410,14 @@
       "source_path": "wan/modules/attention.py"
     },
     "wan/modules/causal_model.py": {
-      "sha256": "046b574209e8a0476d02deecfddb257a4baad6a8424f6469d547589c553fbc58",
-      "bytes": 115105,
+      "sha256": "b9dcfc6303328986f3b45b292713ac4fbc50d3e186561f44a6fb98755735cb60",
+      "bytes": 115011,
       "source_path": "wan/modules/causal_model.py"
+    },
+    "wan/modules/compiled_flex.py": {
+      "sha256": "bbbe0af61ca2dfef3e5fded92819f6af41f74e47ec3c14122ac19c621db26b75",
+      "bytes": 1656,
+      "source_path": "wan/modules/compiled_flex.py"
     },
     "wan/modules/helios_kernels/__init__.py": {
       "sha256": "b6a24080f1b8e93a5c5f57f670e8ee0af7d5e3ef8717edd92295ed1ff6719d27",
@@ -475,5 +485,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1018005
+  "source_bytes": 1031165
 }

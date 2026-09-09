@@ -29,6 +29,7 @@ from wan.modules.model import (
 )
 
 from wan.modules.attention import flash_attention
+from wan.modules.compiled_flex import compile_sparse_flex_attention
 
 
 # ===== Debug helpers：只在异常/即将越界时打印，正常路径不刷日志 =====
@@ -270,18 +271,9 @@ def _build_ref_freqs(freqs, num_slots, tokens_per_slot, ref_grid, device):
 
 # ===== Causal Self-Attention（替换原 WanSelfAttention） =====
 
-# Keep the causal-forcing flex attention path on the default inductor mode.
-# max-autotune can fail on BlockMask symbolic sparse shapes during inference.
-flex_attention = torch.compile(
-    flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs"
-)
-
-# #Casual Forcing 配置
-# flex_attention = torch.compile(
-#     flex_attention,
-#     dynamic=False,
-#     mode="default"
-# )
+# The known TF/non-TF window variants exceed Dynamo's default eight entries.
+# Keep a bounded compiled-only path: dense fallback can exceed 32 GiB in backward.
+flex_attention = compile_sparse_flex_attention(flex_attention)
 
 
 class CausalWanSelfAttention(nn.Module):
