@@ -1,0 +1,7 @@
+# Install the CPU PyTorch wheel first, as shown in README.md.
+# GPU users install the cu128 wheel first; torch==2.8.0 accepts that build too.
+torch==2.8.0
+numpy==2.2.6
+PyYAML==6.0.2
+Pillow==11.3.0
+pytest==8.4.2

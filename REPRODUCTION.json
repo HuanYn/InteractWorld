@@ -1,0 +1,474 @@
+{
+  "schema_version": 1,
+  "kind": "minimal_source_reproduction",
+  "source_revision": "26bc70160553685d9de25b1044dd8a0d0d4b01f0",
+  "upstream": "https://github.com/amap-cvlab/ABot-World",
+  "public_repository": "https://github.com/HuanYn/InteractWorld.git",
+  "development_history_included": false,
+  "weights_or_dataset_included": false,
+  "gpu_training_revalidated_for_export": false,
+  "visual_quality_passed": false,
+  "files": {
+    ".github/workflows/cpu-tests.yml": {
+      "sha256": "dbe791b8eb370ba2e9447ade50b6ed551d48b1defb2f695b150ebffc3c7ad21c",
+      "bytes": 1503,
+      "source_path": "public_repro/.github/workflows/cpu-tests.yml"
+    },
+    ".gitignore": {
+      "sha256": "046b413a06b1f202b3682cd09a3a1151ae22dbc014f5097d40090ca75d060a8d",
+      "bytes": 5059,
+      "source_path": ".gitignore"
+    },
+    "LICENSE": {
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357,
+      "source_path": "LICENSE"
+    },
+    "NOTICE": {
+      "sha256": "756a677ec9f153860c96f10a71b4dd2eebaa829b542d6f8a652c01a01c90d42e",
+      "bytes": 526,
+      "source_path": "NOTICE"
+    },
+    "README.md": {
+      "sha256": "d108022d198b818d17b09abc038fd1890001c6f5badeb9355034078011b59f38",
+      "bytes": 10875,
+      "source_path": "public_repro/README.md"
+    },
+    "THIRD_PARTY_NOTICES.md": {
+      "sha256": "6d6f1f7194d5ba9810d8793a520165301f55512f76b54cf7410eeb50b715d4df",
+      "bytes": 1654,
+      "source_path": "THIRD_PARTY_NOTICES.md"
+    },
+    "configs/eval/rollout15s_v1.yaml": {
+      "sha256": "a0451d817982e6bc069a212ce94895e911c0b53af18b0e886b50bf34c9c74a45",
+      "bytes": 3015,
+      "source_path": "configs/eval/rollout15s_v1.yaml"
+    },
+    "configs/train/action_teacher_5090_gate20.yaml": {
+      "sha256": "aac7d8d8b649e7d23437e31dd1452e217d6bc730cdec346080425135b2991078",
+      "bytes": 1171,
+      "source_path": "configs/train/action_teacher_5090_gate20.yaml"
+    },
+    "configs/train/action_teacher_5090_week.yaml": {
+      "sha256": "16f3809726d8671026dd52fce21c437005d92f489d603ea628ce08bbad66964c",
+      "bytes": 1174,
+      "source_path": "configs/train/action_teacher_5090_week.yaml"
+    },
+    "configs/train/action_teacher_lora_v1.yaml": {
+      "sha256": "570f41317288e16fa64ae7eda7344540ea73fea469ceb50ec9c64691dde3d287",
+      "bytes": 1169,
+      "source_path": "configs/train/action_teacher_lora_v1.yaml"
+    },
+    "configs/train/causal_teacher_forcing_5090_week.yaml": {
+      "sha256": "c7a9b67f9b0a16224b48e3edc052d27ae00d19e4c9e9a4e540141fd3a121720c",
+      "bytes": 1612,
+      "source_path": "configs/train/causal_teacher_forcing_5090_week.yaml"
+    },
+    "configs/train/causal_teacher_forcing_v1.yaml": {
+      "sha256": "e7e8f351b1e5e4b100c8c2e9d37024fa1b249ff8c3c59186ac3213d25bddc30e",
+      "bytes": 1597,
+      "source_path": "configs/train/causal_teacher_forcing_v1.yaml"
+    },
+    "configs/train/longforcing_lite_5090_week.yaml": {
+      "sha256": "586dad97ee1bb0db40d446a582f73f1b1263060f2f99954adebd5e8757223059",
+      "bytes": 2352,
+      "source_path": "configs/train/longforcing_lite_5090_week.yaml"
+    },
+    "configs/train/longforcing_lite_v1.yaml": {
+      "sha256": "c54c922879d3ab88a944b9c70a4594a5133bc3995c4c78318825a4c1e19cccb7",
+      "bytes": 2332,
+      "source_path": "configs/train/longforcing_lite_v1.yaml"
+    },
+    "pipeline/__init__.py": {
+      "sha256": "03cb4c711cdc92cd01e0a8b3ef12da0efd3fd97b6d06d403c6c1a238acbca0f1",
+      "bytes": 167,
+      "source_path": "pipeline/__init__.py"
+    },
+    "pipeline/causal_inference.py": {
+      "sha256": "fbb18ed762fb0b5677358bd7af945952a2396ad4e1385d34cf7db679dc7e3360",
+      "bytes": 42044,
+      "source_path": "pipeline/causal_inference.py"
+    },
+    "requirements-cpu.txt": {
+      "sha256": "a740a9831390aab2ea223c576fac6ec9e369a22139816af0a7656fc3d92a1311",
+      "bytes": 211,
+      "source_path": "public_repro/requirements-cpu.txt"
+    },
+    "requirements-gpu.txt": {
+      "sha256": "603861ae4bc3f5b1e71335426be6511c63537b2c3c4adcb03addf4969e6b7eec",
+      "bytes": 603,
+      "source_path": "public_repro/requirements-gpu.txt"
+    },
+    "scripts/annotate_abot_demo.py": {
+      "sha256": "332d5745f6c3581be98cb3d65769a9e69af9a7639adfd47d33d80476f20723bd",
+      "bytes": 2824,
+      "source_path": "scripts/annotate_abot_demo.py"
+    },
+    "scripts/build_abot_manifest.py": {
+      "sha256": "221d45a870a10c246f2ef73eecb1de9a4bff43bf3a68fcd10bd791eef5f4f096",
+      "bytes": 2024,
+      "source_path": "scripts/build_abot_manifest.py"
+    },
+    "scripts/cache_abot_features.py": {
+      "sha256": "a337467b56fb1abe923430c5905b0077ad907b4306e919530a0ff0e581f14c28",
+      "bytes": 31386,
+      "source_path": "scripts/cache_abot_features.py"
+    },
+    "scripts/cache_abot_long_features.py": {
+      "sha256": "a13dd2f80a84653797515cc81b27a41f766231eff3e69f561f26825ec441674f",
+      "bytes": 18858,
+      "source_path": "scripts/cache_abot_long_features.py"
+    },
+    "scripts/check_wan_checkpoint_api.py": {
+      "sha256": "2f7fff30ebd62c02c8b022ca84b579cb8fd66ec913dcf377f96d59e86a86618c",
+      "bytes": 1564,
+      "source_path": "scripts/check_wan_checkpoint_api.py"
+    },
+    "scripts/configure_reproduction.py": {
+      "sha256": "527d734e7ea4dc217941ffa46ed1ef35631d873119532a154c664716f4e42dc2",
+      "bytes": 7634,
+      "source_path": "public_repro/scripts/configure_reproduction.py"
+    },
+    "scripts/evaluate_rollout15s.py": {
+      "sha256": "9991373b6500b59e5b94796ca039a0deeebe6894fc0f1dd57798150d3e33c112",
+      "bytes": 3630,
+      "source_path": "scripts/evaluate_rollout15s.py"
+    },
+    "scripts/fetch_abot_subset.py": {
+      "sha256": "47322eb5297183ad2fcdc6b0127278a79775d0bcb1fecad68c63d7972e44b2cb",
+      "bytes": 4723,
+      "source_path": "scripts/fetch_abot_subset.py"
+    },
+    "scripts/generate_abot_demo.py": {
+      "sha256": "7f438ef46ce3b66187b012432a2a1bd408f6b39bf27222241dab735b0714b5f1",
+      "bytes": 7438,
+      "source_path": "scripts/generate_abot_demo.py"
+    },
+    "scripts/package_abot_demo.py": {
+      "sha256": "924f21f70eb0121f87846653db1b15090b8b5c35196b81ae251537246dd91569",
+      "bytes": 8833,
+      "source_path": "scripts/package_abot_demo.py"
+    },
+    "scripts/prepare_abot_demo_assets.py": {
+      "sha256": "f9cbb60a601f161f696e20b98d4ac9ae42efeffa2965a2621d743ab84fd9694d",
+      "bytes": 8531,
+      "source_path": "scripts/prepare_abot_demo_assets.py"
+    },
+    "tests/test_abot_data.py": {
+      "sha256": "dc3d0b2fce9bb82174cc751efcde39a684c44809a688a454a5af1e73fd1af937",
+      "bytes": 7770,
+      "source_path": "tests/test_abot_data.py"
+    },
+    "tests/test_abot_remote.py": {
+      "sha256": "7fd550ad5fa2ee16c7924981b1be58abed8938e1a361b06029e6849fbafeb2c7",
+      "bytes": 11031,
+      "source_path": "tests/test_abot_remote.py"
+    },
+    "tests/test_action_dataset.py": {
+      "sha256": "312497ec28422f90903c8ab087d1640f4644c4c661a18a3ae2f18d8c442833d9",
+      "bytes": 13312,
+      "source_path": "tests/test_action_dataset.py"
+    },
+    "tests/test_action_teacher.py": {
+      "sha256": "d5aeda5e48a4d71b1b45e00f455f30a7490e4417a73c1a5e7285bc00570a957c",
+      "bytes": 14223,
+      "source_path": "tests/test_action_teacher.py"
+    },
+    "tests/test_cache_abot_long_features.py": {
+      "sha256": "86a54ff7597aebf81414bc96870cf669832b31b0e01f52899ecd690d99992b4e",
+      "bytes": 4276,
+      "source_path": "tests/test_cache_abot_long_features.py"
+    },
+    "tests/test_causal_flow_solver.py": {
+      "sha256": "a8a8b3ec53e8cc3cbf5780515c8d579d0056fe9855afaf6f7976666bd875b67f",
+      "bytes": 7465,
+      "source_path": "tests/test_causal_flow_solver.py"
+    },
+    "tests/test_causal_tf.py": {
+      "sha256": "9877e926f830bd385529eb5bcd6093e6a56820e2811ed28c1d234ffed64c00f7",
+      "bytes": 12425,
+      "source_path": "tests/test_causal_tf.py"
+    },
+    "tests/test_configure_reproduction.py": {
+      "sha256": "da513887d7b9070944302dc5af4b60217220fd586ce3dabb81b90ac71ae1309b",
+      "bytes": 6232,
+      "source_path": "tests/test_configure_reproduction.py"
+    },
+    "tests/test_gpu_gate.py": {
+      "sha256": "53aba785f5760e75ab7bfca8b0ecc6435ec402b27ff60960ca79ff2de3c2574e",
+      "bytes": 2123,
+      "source_path": "tests/test_gpu_gate.py"
+    },
+    "tests/test_input_header.py": {
+      "sha256": "6f7f100ba3159f351f26d30da56746e0cc0fa3a4522481543e192b06b74681f9",
+      "bytes": 5903,
+      "source_path": "tests/test_input_header.py"
+    },
+    "tests/test_longforcing_lite.py": {
+      "sha256": "66edd2cb796939306ecfb2ad194d05ae0517eae68f568b8a502b995c3d80e092",
+      "bytes": 12520,
+      "source_path": "tests/test_longforcing_lite.py"
+    },
+    "tests/test_package_abot_demo.py": {
+      "sha256": "048a63502408973949433b726d9620f927af800e06b1ac361487c0967d3dea9e",
+      "bytes": 4828,
+      "source_path": "tests/test_package_abot_demo.py"
+    },
+    "tests/test_portable_paths.py": {
+      "sha256": "41fbac308debfc48f5b38ec909a7b9ee145451d27c19c87010f5aa6f2cd43b14",
+      "bytes": 4420,
+      "source_path": "tests/test_portable_paths.py"
+    },
+    "tests/test_rollout15s.py": {
+      "sha256": "ffcc3a30572787f275f70b3ffa7a3ac7060cf055478d7fd1feb520c3ee171895",
+      "bytes": 4325,
+      "source_path": "tests/test_rollout15s.py"
+    },
+    "tests/test_wan_causal_priming.py": {
+      "sha256": "dd8449987e020c9988b231444fb10079f54d21393c131db5e9c30b89b962345d",
+      "bytes": 2805,
+      "source_path": "tests/test_wan_causal_priming.py"
+    },
+    "tests/test_wan_longforcing_adapter.py": {
+      "sha256": "206bb6d3cc98e36d452af9c2d6d065f5afd3ba43ee6685fafe833c6617f8b4ec",
+      "bytes": 9708,
+      "source_path": "tests/test_wan_longforcing_adapter.py"
+    },
+    "train_action_teacher.py": {
+      "sha256": "86bf9109bdc9895176c98e5af59f4d0708d885ff956610459f8681ca66699d2e",
+      "bytes": 27544,
+      "source_path": "train_action_teacher.py"
+    },
+    "train_causal_teacher_forcing.py": {
+      "sha256": "9a1f6ea4b10160fbe1f1cf90825f46b7745b4a11999765fef65254f0c1420fa3",
+      "bytes": 19195,
+      "source_path": "train_causal_teacher_forcing.py"
+    },
+    "train_longforcing_lite.py": {
+      "sha256": "da78ae19039b035193fc743194809c3f2705448a3b18dc40693031b5a532d7da",
+      "bytes": 20065,
+      "source_path": "train_longforcing_lite.py"
+    },
+    "training/causal_tf.py": {
+      "sha256": "9eb5727a47fcc80fbf82e269311421ea9c45e3a9b95c94c9c6f60e3a8ed3004b",
+      "bytes": 27469,
+      "source_path": "training/causal_tf.py"
+    },
+    "training/config.py": {
+      "sha256": "2bb5ac6a130530bc7a15069e7cacfa5b7f09f352329ff200a0e20061930e15ef",
+      "bytes": 6962,
+      "source_path": "training/config.py"
+    },
+    "training/data/__init__.py": {
+      "sha256": "1c170c1b84a8774f88534ba24b4bb8a0caa67caf838ab087c9d212ff67c09c05",
+      "bytes": 605,
+      "source_path": "training/data/__init__.py"
+    },
+    "training/data/abot_manifest.py": {
+      "sha256": "1bd0c6e11a60386be98900479a756bbc7a8bf287ed66748a9e81bfc92a037965",
+      "bytes": 12276,
+      "source_path": "training/data/abot_manifest.py"
+    },
+    "training/data/abot_remote.py": {
+      "sha256": "bd3b4186c349899d6a6097151588b3a26ad2e128a009c72c49a8c279f6d5c4b6",
+      "bytes": 40718,
+      "source_path": "training/data/abot_remote.py"
+    },
+    "training/data/action_dataset.py": {
+      "sha256": "4976303143771deabbe1ac08d3874d603317c5744ccaf7d770b4781cfd6f72d7",
+      "bytes": 11921,
+      "source_path": "training/data/action_dataset.py"
+    },
+    "training/data/action_schema.py": {
+      "sha256": "f9e8b5e6918454a5513c2c4802efdd9b82bbef1fbb6c33b2328571d1579a9e75",
+      "bytes": 10536,
+      "source_path": "training/data/action_schema.py"
+    },
+    "training/data/longforcing_dataset.py": {
+      "sha256": "5c1a9e0c874134122d3d87fdabc600203d65d9dc33af75c83ecb2568801f5253",
+      "bytes": 11244,
+      "source_path": "training/data/longforcing_dataset.py"
+    },
+    "training/data/safe_annotations.py": {
+      "sha256": "83faf0cce8ff1d54b2ce164bf0ddbe1a0a1ae2170185ef42467412601f8804c6",
+      "bytes": 4068,
+      "source_path": "training/data/safe_annotations.py"
+    },
+    "training/eval/__init__.py": {
+      "sha256": "ad8c61726db4ee9a3116dbb6192111e9e93f4a46bd821fff5c57189592fdcde1",
+      "bytes": 292,
+      "source_path": "training/eval/__init__.py"
+    },
+    "training/eval/input_header.py": {
+      "sha256": "39aa8995156b4434d20bf6bdce2762c1f9684b9b200780a8d9cf55d66cebba51",
+      "bytes": 16536,
+      "source_path": "training/eval/input_header.py"
+    },
+    "training/eval/rollout15s.py": {
+      "sha256": "48f59e4d8819a2f873057b32f34af3eaa2e63962fd88bc0fcff240d089c40876",
+      "bytes": 30668,
+      "source_path": "training/eval/rollout15s.py"
+    },
+    "training/eval/wan_causal_adapter.py": {
+      "sha256": "3dbf82605dd23502b961c3ac696d1e08b81b0e8e5b9e6dcfbd1c18989feb76ae",
+      "bytes": 16233,
+      "source_path": "training/eval/wan_causal_adapter.py"
+    },
+    "training/eval/wan_longforcing_adapter.py": {
+      "sha256": "b34998046516afceb937f77640ce14f3cd1f5e1ca1a7661fbd6d6b042ab7ade6",
+      "bytes": 4509,
+      "source_path": "training/eval/wan_longforcing_adapter.py"
+    },
+    "training/gpu_gate.py": {
+      "sha256": "2b254a9c2038e62f63a2c0b2e29b67cba131d05012a7ad5b750e03a2403abb05",
+      "bytes": 4427,
+      "source_path": "training/gpu_gate.py"
+    },
+    "training/longforcing_lite.py": {
+      "sha256": "2a559131160da0cd7565f3cf279f0a77ccf76adfa4bc62cbdda55dfc49a4f089",
+      "bytes": 38451,
+      "source_path": "training/longforcing_lite.py"
+    },
+    "training/models/__init__.py": {
+      "sha256": "bca21e6c5f9063a6db456e4c2a24ec34e15ad633dff8beceefaeea039432c3b6",
+      "bytes": 597,
+      "source_path": "training/models/__init__.py"
+    },
+    "training/models/action_adapter.py": {
+      "sha256": "e8701f3f36497bc851db8b964f711a19481154c1f2163aa34305e00286f4520d",
+      "bytes": 4741,
+      "source_path": "training/models/action_adapter.py"
+    },
+    "training/models/lora.py": {
+      "sha256": "ca99cd9c795b8a90595cf79da2a131b9b32a9ae53425d35b9b5a44bb9623a198",
+      "bytes": 4682,
+      "source_path": "training/models/lora.py"
+    },
+    "training/paths.py": {
+      "sha256": "d872103d10dccff9af035aa73c987d5cdc5e3ddff2a260a449e6b2a2449f64c8",
+      "bytes": 1498,
+      "source_path": "training/paths.py"
+    },
+    "training/runtime.py": {
+      "sha256": "dcf59860e5432c61120413bc1b8c20459b75549bc56942198150f086e76605f3",
+      "bytes": 4945,
+      "source_path": "training/runtime.py"
+    },
+    "utils/action_alignment.py": {
+      "sha256": "9c86068d4ef40ba23bff563dc9a273d943cd242bfb07730bd9f55d0984d14272",
+      "bytes": 3260,
+      "source_path": "utils/action_alignment.py"
+    },
+    "utils/cuda_kernel_buckets.py": {
+      "sha256": "faed9526852a568371472a3ffe155ead967a7c8f569e96062139da5b83164b56",
+      "bytes": 6481,
+      "source_path": "utils/cuda_kernel_buckets.py"
+    },
+    "utils/memory.py": {
+      "sha256": "a960d16637e62d55c5e667af155060d4367585674afc6ff5806f5988f0cf76e3",
+      "bytes": 4484,
+      "source_path": "utils/memory.py"
+    },
+    "utils/misc.py": {
+      "sha256": "2e7bee69a5b8e228e7c5d3e0f99fa2ee62a3701593d9da7b6b7d77f60b2fdb54",
+      "bytes": 1222,
+      "source_path": "utils/misc.py"
+    },
+    "utils/scheduler.py": {
+      "sha256": "892fc4fbfa2a167093ffc1a543a9a4f5960d35106aa68d10fa16a648f6877aba",
+      "bytes": 8046,
+      "source_path": "utils/scheduler.py"
+    },
+    "utils/wan_wrapper.py": {
+      "sha256": "3102bcc28d78d16e71ab8654180600eaf4bf118f875c5ba0cba7011c03fc2a96",
+      "bytes": 37414,
+      "source_path": "utils/wan_wrapper.py"
+    },
+    "wan/__init__.py": {
+      "sha256": "48c901757302947a95d7433822f75f2d4cebc2c5fc105fbba9152bd439893137",
+      "bytes": 162,
+      "source_path": "wan/__init__.py"
+    },
+    "wan/modules/__init__.py": {
+      "sha256": "fac1580fda3e8a4ad9dbb1d68a012dc5c27ad99c44b487ebabb5335ef9238303",
+      "bytes": 516,
+      "source_path": "wan/modules/__init__.py"
+    },
+    "wan/modules/attention.py": {
+      "sha256": "0205ae953cbfb7197cf2261ded8673d6dacfd913d07be0ca04694c40c90568f5",
+      "bytes": 14948,
+      "source_path": "wan/modules/attention.py"
+    },
+    "wan/modules/causal_model.py": {
+      "sha256": "c50f1824b0e07b296060cc015d67c5a9492af872eb3c73c751eec0744d935629",
+      "bytes": 112692,
+      "source_path": "wan/modules/causal_model.py"
+    },
+    "wan/modules/helios_kernels/__init__.py": {
+      "sha256": "b6a24080f1b8e93a5c5f57f670e8ee0af7d5e3ef8717edd92295ed1ff6719d27",
+      "bytes": 373,
+      "source_path": "wan/modules/helios_kernels/__init__.py"
+    },
+    "wan/modules/helios_kernels/fp32_rmsnorm.py": {
+      "sha256": "089669685fe2ea5aff7a4f7aa99d11bcf662630d922864be22b1cbc235ceac1a",
+      "bytes": 1578,
+      "source_path": "wan/modules/helios_kernels/fp32_rmsnorm.py"
+    },
+    "wan/modules/helios_kernels/tiled_linear.py": {
+      "sha256": "9e2de6a0be3ecc08b0451aefccdc62df5bc711d68fc563046f7b7cc431b95ed9",
+      "bytes": 14244,
+      "source_path": "wan/modules/helios_kernels/tiled_linear.py"
+    },
+    "wan/modules/helios_kernels/triton_norm.py": {
+      "sha256": "6c77321a2c0653e58a25caeb03c68f0f311025005c92ab5894aec1231c260d4a",
+      "bytes": 12392,
+      "source_path": "wan/modules/helios_kernels/triton_norm.py"
+    },
+    "wan/modules/helios_kernels/triton_rope.py": {
+      "sha256": "ee58fc1b2b9412a34354304b010cb730d37bf47bbaec682caedec3dce3f33a6b",
+      "bytes": 26640,
+      "source_path": "wan/modules/helios_kernels/triton_rope.py"
+    },
+    "wan/modules/helios_kernels/utils.py": {
+      "sha256": "843b13a933630408777c2e391d6d93e2ae44d38d422c1658cfc40700fe3dcfb7",
+      "bytes": 1722,
+      "source_path": "wan/modules/helios_kernels/utils.py"
+    },
+    "wan/modules/model.py": {
+      "sha256": "849fc15f7fb81f88458544909b6306bd212e3400cc75e652b8dfb1bdc3568a4e",
+      "bytes": 31438,
+      "source_path": "wan/modules/model.py"
+    },
+    "wan/modules/sla_attn.py": {
+      "sha256": "7a295040d4080bd15ee127fb53108709264ccfee614ee753e0d4624df4fe22a6",
+      "bytes": 1626,
+      "source_path": "wan/modules/sla_attn.py"
+    },
+    "wan/modules/sla_kernel.py": {
+      "sha256": "a250f6ad486b10528ea6c070597aafa8869eb7c5fda4a38df48cfec6d08b07f4",
+      "bytes": 10452,
+      "source_path": "wan/modules/sla_kernel.py"
+    },
+    "wan/modules/t5.py": {
+      "sha256": "5a1d4041b72a0642b0c143c4413eab7ce60213b8da6b82832907e25b0ffb2aaa",
+      "bytes": 16977,
+      "source_path": "wan/modules/t5.py"
+    },
+    "wan/modules/taehv.py": {
+      "sha256": "16819b831ebde047e3401c3924d7bf72b63e7eb08c7623f8314978a1cb7b2f6d",
+      "bytes": 22234,
+      "source_path": "wan/modules/taehv.py"
+    },
+    "wan/modules/tokenizers.py": {
+      "sha256": "9f4d466edb70684dfab4adf679023d6d8ddf9572533d81e8fb20ddc35735b50b",
+      "bytes": 2498,
+      "source_path": "wan/modules/tokenizers.py"
+    },
+    "wan/modules/vae2_2.py": {
+      "sha256": "59d66f0f12d9ebba9f21ca9afdfc9692d6a2d0354b5c21eff86bd48753da5e06",
+      "bytes": 46673,
+      "source_path": "wan/modules/vae2_2.py"
+    }
+  },
+  "source_bytes": 1007486
+}

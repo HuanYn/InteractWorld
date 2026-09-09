@@ -1,0 +1,19 @@
+# Linux / Python 3.12 direct dependencies for the unquantized training route.
+# Install torch==2.8.0 from the cu128 index before this file.
+# This is not a complete transitive or hash-locked environment.
+-r requirements-cpu.txt
+diffusers==0.37.0
+transformers==5.4.0
+tokenizers==0.22.2
+accelerate==1.13.0
+bitsandbytes==0.50.2
+einops==0.8.2
+omegaconf==2.3.0
+ftfy==6.3.1
+sentencepiece==0.2.1
+tqdm==4.67.3
+av==17.0.0
+safetensors>=0.6.2,<1
+huggingface_hub>=1,<2
+# CUDA Triton is supplied by the matching Linux PyTorch distribution.
+# Optional FlashAttention is installed separately against that exact build.

@@ -1,0 +1,10 @@
+ABot-World
+Copyright 2026 AMAP CV LAB
+
+This product includes software developed by AMAP CV LAB.
+
+This product includes or adapts third-party software components. See
+THIRD_PARTY_NOTICES.md for attribution and license references.
+
+InterActWorld reproduction modifications (2026): action-adapter/LoRA training, causal and LongForcing-lite training, portable data/configuration, and demo export.
+Upstream attribution is retained above. No upstream demo media or trained weights are redistributed in this minimal source snapshot.

@@ -1,0 +1,73 @@
+version: 1
+run_id: rollout15s-v1
+output_root: /path/to/interactworld/eval/rollout15s
+adapter_factory: training.eval.wan_causal_adapter:create_wan_causal_adapter
+
+geometry:
+  width: 832
+  height: 480
+  fps: 16
+  num_chunks: 20
+  latent_frames_per_chunk: 3
+  rgb_frames_per_latent: 4
+  total_rgb_frames: 241
+
+late_anchors:
+  - {frame_index: 120, weight: 0.2}
+  - {frame_index: 180, weight: 0.3}
+  - {frame_index: 240, weight: 0.5}
+
+lineage:
+  checkpoint_path: /path/to/interactworld/runs/longforcing_lite_v1/checkpoints/best.pt
+  checkpoint_sha256: null
+  expected_stage: longforcing_lite_v1
+  expected_base_model_path: /path/to/interactworld/models/Wan2.2-TI2V-5B@921dbaf3f1674a56f47e83fb80a34bac8a8f203e
+  artifact_paths:
+    dataset_manifest: /path/to/interactworld/data/manifests/train.jsonl
+    feature_index: /path/to/interactworld/data/features/train.features.jsonl
+    feature_receipt: /path/to/interactworld/data/features/train.features.jsonl.receipt.json
+    training_config: /path/to/InteractWorld/configs/train/longforcing_lite_v1.yaml
+    teacher_checkpoint: /path/to/interactworld/runs/action_teacher_lora_v1/checkpoints/best.pt
+    causal_checkpoint: /path/to/interactworld/runs/causal_teacher_forcing_v1/checkpoints/best.pt
+    long_feature_index: /path/to/interactworld/data/features/train.long241.features.jsonl
+    long_feature_receipt: /path/to/interactworld/data/features/train.long241.features.jsonl.receipt.json
+
+scenes:
+  - scene_id: corridor_turn
+    prompt: First-person traversal through an indoor corridor with stable geometry.
+    initial_frame_path: /path/to/interactworld/eval/assets/corridor_turn/initial.npy
+    reference_frames_path: /path/to/interactworld/eval/assets/corridor_turn/late_anchors.npz
+    seed: 4201
+    action_segments:
+      - {frames: 48, keys: [W]}
+      - {frames: 24, keys: [W, L]}
+      - {frames: 48, keys: [W]}
+      - {frames: 24, keys: [W, J]}
+      - {frames: 48, keys: [W]}
+      - {frames: 48, keys: []}
+
+  - scene_id: room_strafe
+    prompt: First-person movement across a furnished room while preserving object identity.
+    initial_frame_path: /path/to/interactworld/eval/assets/room_strafe/initial.npy
+    reference_frames_path: /path/to/interactworld/eval/assets/room_strafe/late_anchors.npz
+    seed: 4202
+    action_segments:
+      - {frames: 36, keys: [D]}
+      - {frames: 48, keys: [W]}
+      - {frames: 36, keys: [A]}
+      - {frames: 48, keys: [W, L]}
+      - {frames: 36, keys: [W]}
+      - {frames: 36, keys: []}
+
+  - scene_id: outdoor_pan
+    prompt: First-person outdoor navigation with a controlled camera pan and stable horizon.
+    initial_frame_path: /path/to/interactworld/eval/assets/outdoor_pan/initial.npy
+    reference_frames_path: /path/to/interactworld/eval/assets/outdoor_pan/late_anchors.npz
+    seed: 4203
+    action_segments:
+      - {frames: 48, keys: [W]}
+      - {frames: 36, keys: [W, J]}
+      - {frames: 48, keys: [W]}
+      - {frames: 36, keys: [W, L]}
+      - {frames: 36, keys: [W]}
+      - {frames: 36, keys: []}
