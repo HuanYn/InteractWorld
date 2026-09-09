@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping
 
 import torch
@@ -37,6 +37,7 @@ PINNED_BASE_MODEL = (
     "Wan2.2-TI2V-5B@921dbaf3f1674a56f47e83fb80a34bac8a8f203e"
 )
 SHARED_DATA_HASH_KEYS = ("dataset_manifest", "feature_index", "feature_receipt")
+PROMPT_CACHE_HASH_KEYS = ("prompt_cache", "prompt_cache_receipt")
 
 
 @dataclass
@@ -64,6 +65,7 @@ class CausalModelConfig:
 class CausalDataConfig:
     manifest_path: str = "/path/to/interactworld/data/manifests/train.jsonl"
     manifest_sha256: str | None = None
+    prompt_cache_path: str | None = None
     feature_index_path: str = (
         "/path/to/interactworld/data/features/train.features.jsonl"
     )
@@ -154,6 +156,10 @@ class CausalTeacherForcingConfig:
             errors.append("rgb_frames_per_action_token must be 4")
         if not self.data.precomputed_latents or not self.data.precomputed_text_embeddings:
             errors.append("causal training requires precomputed VAE and text features")
+        try:
+            _validate_prompt_cache_path(self.data.prompt_cache_path)
+        except ValueError as exc:
+            errors.append(str(exc))
         expected_index = (
             Path(self.data.manifest_path).parent.parent
             / "features"
@@ -340,6 +346,32 @@ def assert_no_future_leakage(
         raise ValueError(f"teacher-forcing mask misses required token: query={query}, key={key}")
 
 
+def _validate_prompt_cache_path(value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        windows = PureWindowsPath(value)
+        path = windows if windows.drive else PurePosixPath(value)
+        if path.is_absolute() and ".." not in path.parts and path.suffix == ".pt":
+            return
+    raise ValueError("prompt_cache_path must be null or an absolute .pt path without traversal")
+
+
+def _prompt_contract(data: Mapping[str, Any], hashes: Mapping[str, str]) -> dict[str, Any]:
+    """An absent legacy path is narrative text, never an implicit static cache."""
+    path = data.get("prompt_cache_path")
+    _validate_prompt_cache_path(path)
+    if path is None and any(key in hashes for key in PROMPT_CACHE_HASH_KEYS):
+        raise ValueError("legacy prompt contract unexpectedly contains prompt cache hashes")
+    if path is not None and any(not hashes.get(key) for key in PROMPT_CACHE_HASH_KEYS):
+        raise ValueError("static prompt contract is missing prompt cache artifact hashes")
+    return {
+        "policy": "scene_static_only_v1" if path is not None else "original_feature_cache_prompt",
+        "prompt_cache_path": path,
+        "artifact_hashes": {key: hashes[key] for key in PROMPT_CACHE_HASH_KEYS if key in hashes},
+    }
+
+
 def artifact_hashes(
     config: CausalTeacherForcingConfig,
     config_path: str | Path,
@@ -366,6 +398,17 @@ def artifact_hashes(
                 f"expected {config.lineage.checkpoint_sha256}, "
                 f"got {hashes['teacher_checkpoint']}"
             )
+    if config.data.prompt_cache_path is not None:
+        from training.data.action_dataset import validate_scene_static_prompt_cache_binding
+
+        _validate_prompt_cache_path(config.data.prompt_cache_path)
+        prompt_path = Path(config.data.prompt_cache_path)
+        receipt = validate_scene_static_prompt_cache_binding(
+            prompt_path, index_path=config.data.feature_index_path, manifest_path=config.data.manifest_path,
+        )
+        # The validator already hashes the large text tensor file once.
+        hashes["prompt_cache"] = receipt["cache_sha256"]
+        hashes["prompt_cache_receipt"] = sha256_file(prompt_path.with_suffix(prompt_path.suffix + ".receipt.json"))
     return hashes
 
 
@@ -436,11 +479,18 @@ def load_teacher_checkpoint(
     source_config = payload.get("config")
     if not isinstance(source_config, dict):
         raise ValueError("teacher checkpoint has no serialized configuration")
+    source_data = source_config.get("data", {})
+    if not isinstance(source_data, Mapping):
+        raise ValueError("teacher checkpoint has invalid serialized data configuration")
+    if _prompt_contract(source_data, source_hashes) != _prompt_contract(asdict(config.data), hashes):
+        raise ValueError("teacher and causal stages disagree on prompt policy/path/hash contract")
     source_model = source_config.get("model")
     if not isinstance(source_model, dict):
         raise ValueError("teacher checkpoint has no serialized model configuration")
     if source_model.get("base_model_path") != config.model.base_model_path:
         raise ValueError("teacher and causal stages do not use the same pinned base model")
+    if validate_action_scale(source_model.get("action_scale", 1.0)) != validate_action_scale(config.model.action_scale):
+        raise ValueError("teacher and causal stages disagree on inherited model field action_scale")
     inherited_contract = {
         "model_type": config.model.model_type,
         "lora_rank": config.model.lora_rank,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -23,7 +25,9 @@ from training.causal_tf import (
 )
 from training.models.lora import configure_action_teacher, trainable_state_dict
 from training.runtime import sha256_file
-from train_causal_teacher_forcing import _iterator_at_micro_batch, validation_report
+from train_causal_teacher_forcing import (
+    _checkpoint_payload, _iterator_at_micro_batch, _restore_resume, validation_report,
+)
 
 ROOT = Path(__file__).parents[1]
 CONFIG_PATH = ROOT / "configs" / "train" / "causal_teacher_forcing_v1.yaml"
@@ -349,3 +353,148 @@ def test_resume_iterator_returns_to_exact_deterministic_position() -> None:
     loader = [{"index": value} for value in range(5)]
     _, iterator = _iterator_at_micro_batch(loader, 8)
     assert next(iterator)["index"] == 3
+
+
+@pytest.mark.parametrize("path", ["relative.pt", "/cache/prompts.json", "/cache/../prompts.pt", "", 123,
+                                  "C:relative.pt", "C:/cache/../prompts.pt"])
+def test_causal_prompt_cache_config_rejects_invalid_paths(path):
+    config = load_causal_config(CONFIG_PATH)
+    config.data.prompt_cache_path = path
+    with pytest.raises(ValueError, match="prompt_cache_path"):
+        config.validate()
+
+
+@pytest.mark.parametrize("path", [None, "/project/features/static.pt", "Z:/example/features/static.pt"])
+def test_causal_prompt_cache_config_preserves_explicit_and_legacy_values(tmp_path, path):
+    import yaml
+    config = load_causal_config(CONFIG_PATH)
+    config.data.prompt_cache_path = path
+    config.validate()
+    serialized = config.to_dict()
+    if path is None:
+        serialized["data"].pop("prompt_cache_path")
+    file = tmp_path / "roundtrip.yaml"
+    file.write_text(yaml.safe_dump(serialized), encoding="utf-8")
+    assert load_causal_config(file).data.prompt_cache_path == path
+
+
+def _write_static_lineage_fixture(tmp_path):
+    config, source, checkpoint, _ = _write_lineage_fixture(tmp_path)
+    manifest = Path(config.data.manifest_path)
+    index = Path(config.data.feature_index_path)
+    feature_receipt = Path(config.data.feature_receipt_path)
+    row = {"episode_id": "one", "split": "train"}
+    manifest.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    index.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    feature_receipt.write_text(json.dumps({"schema_version": 1, "index": str(index), "manifest": str(manifest),
+        "index_sha256": sha256_file(index), "manifest_sha256": sha256_file(manifest)}), encoding="utf-8")
+    prompt = tmp_path / "static.pt"
+    torch.save({"schema_version": 1, "kind": "scene_static_prompt_cache",
+                "prompt_embeds": {"one": torch.zeros(2, 4096, dtype=torch.bfloat16)}}, prompt)
+    caption = "A quiet outdoor environment."
+    receipt = {"schema_version": 1, "kind": "scene_static_prompt_cache", "prompt_policy": "scene_static_only_v1",
+               "cache_path": str(prompt), "cache_sha256": sha256_file(prompt),
+               "manifest_sha256": sha256_file(manifest), "feature_index_sha256": sha256_file(index),
+               "feature_receipt_sha256": sha256_file(feature_receipt), "encoder": {"kind": "unit-test-fixture"},
+               "episodes": {"one": {"split": "train", "prompt": caption,
+                                      "prompt_sha256": hashlib.sha256(caption.encode()).hexdigest()}}}
+    prompt.with_suffix(prompt.suffix + ".receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    config.data.prompt_cache_path = str(prompt)
+    config.model.action_scale = 0.03
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    payload["config"]["data"] = {"prompt_cache_path": str(prompt)}
+    payload["config"]["model"]["action_scale"] = 0.03
+    payload["manifest_hashes"].update(
+        dataset_manifest=sha256_file(manifest), feature_index=sha256_file(index),
+        feature_receipt=sha256_file(feature_receipt), prompt_cache=sha256_file(prompt),
+        prompt_cache_receipt=sha256_file(prompt.with_suffix(prompt.suffix + ".receipt.json")),
+    )
+    torch.save(payload, checkpoint)
+    hashes = artifact_hashes(config, tmp_path / "causal.yaml")
+    return config, source, checkpoint, hashes
+
+
+def test_static_causal_artifacts_validate_binding_without_loading_payload_or_cuda(tmp_path, monkeypatch):
+    config, _, checkpoint, _ = _write_static_lineage_fixture(tmp_path)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("artifact hashing must not load tensor payloads or query CUDA")
+    monkeypatch.setattr(torch, "load", forbidden)
+    monkeypatch.setattr(torch.cuda, "is_available", forbidden)
+    hashes = artifact_hashes(config, tmp_path / "causal.yaml")
+    assert hashes["prompt_cache"] == sha256_file(config.data.prompt_cache_path)
+    assert hashes["teacher_checkpoint"] == sha256_file(checkpoint)
+    receipt_path = Path(config.data.prompt_cache_path).with_suffix(".pt.receipt.json")
+    assert hashes["prompt_cache_receipt"] == sha256_file(receipt_path)
+    receipt = json.loads(receipt_path.read_text())
+    receipt["prompt_policy"] = "original_feature_cache_prompt"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(ValueError, match="kind/policy mismatch"):
+        artifact_hashes(config, tmp_path / "causal.yaml")
+
+
+def test_teacher_static_prompt_path_and_both_hashes_are_inherited_exactly(tmp_path):
+    config, _, _, hashes = _write_static_lineage_fixture(tmp_path)
+    payload, lineage = load_teacher_checkpoint(config, hashes)
+    assert payload["config"]["data"]["prompt_cache_path"] == config.data.prompt_cache_path
+    assert lineage.source_manifest_hashes["prompt_cache"] == hashes["prompt_cache"]
+    assert lineage.source_manifest_hashes["prompt_cache_receipt"] == hashes["prompt_cache_receipt"]
+
+
+@pytest.mark.parametrize("change", ["static_to_narrative", "narrative_to_static", "different_path",
+                                   "different_cache_hash", "different_receipt_hash", "missing_hash",
+                                   "undeclared_source_hashes", "action_scale"])
+def test_causal_parent_rejects_prompt_policy_path_hash_and_scale_changes(tmp_path, change):
+    config, _, checkpoint, hashes = _write_static_lineage_fixture(tmp_path)
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    expected = "prompt"
+    if change == "static_to_narrative":
+        config.data.prompt_cache_path = None
+        hashes.pop("prompt_cache")
+        hashes.pop("prompt_cache_receipt")
+    elif change == "narrative_to_static":
+        payload["config"]["data"].pop("prompt_cache_path")
+        payload["manifest_hashes"].pop("prompt_cache")
+        payload["manifest_hashes"].pop("prompt_cache_receipt")
+    elif change == "different_path":
+        config.data.prompt_cache_path = str(tmp_path / "other.pt")
+    elif change == "different_cache_hash":
+        payload["manifest_hashes"]["prompt_cache"] = "0" * 64
+    elif change == "different_receipt_hash":
+        payload["manifest_hashes"]["prompt_cache_receipt"] = "0" * 64
+    elif change == "missing_hash":
+        payload["manifest_hashes"].pop("prompt_cache_receipt")
+    elif change == "undeclared_source_hashes":
+        payload["config"]["data"].pop("prompt_cache_path")
+    else:
+        config.model.action_scale = 1.0
+        expected = "action_scale"
+    torch.save(payload, checkpoint)
+    hashes["teacher_checkpoint"] = sha256_file(checkpoint)
+    with pytest.raises(ValueError, match=expected):
+        load_teacher_checkpoint(config, hashes)
+
+
+@pytest.mark.parametrize("use_static", [False, True])
+def test_causal_resume_keeps_legacy_none_and_strict_prompt_artifact_binding(tmp_path, use_static):
+    fixture = _write_static_lineage_fixture if use_static else _write_lineage_fixture
+    config, model, _, hashes = fixture(tmp_path)
+    _, lineage = load_teacher_checkpoint(config, hashes)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    payload = _checkpoint_payload(model, optimizer, config=config, step=2, micro_batches_consumed=16,
+                                  metrics={"loss": 1.0}, manifest_hashes=hashes, teacher_lineage=lineage.as_dict())
+    if not use_static:
+        # Old checkpoints omitted this optional field; their exact hashes and
+        # narrative semantics must remain valid without rewriting old YAMLs.
+        payload["config"]["data"].pop("prompt_cache_path")
+    resume = tmp_path / "resume.pt"
+    torch.save(payload, resume)
+    kwargs = dict(model=model, optimizer=optimizer, teacher_lineage=lineage.as_dict(), gradient_accumulation_steps=8)
+    assert _restore_resume(resume, hashes=hashes, **kwargs) == (2, 16)
+    changed = dict(hashes)
+    if use_static:
+        changed.pop("prompt_cache")
+        changed.pop("prompt_cache_receipt")
+    else:
+        changed.update(prompt_cache="0" * 64, prompt_cache_receipt="1" * 64)
+    with pytest.raises(ValueError, match="resume manifest hashes do not match"):
+        _restore_resume(resume, hashes=changed, **kwargs)

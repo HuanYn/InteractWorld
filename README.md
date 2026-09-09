@@ -31,6 +31,11 @@ warm start 允许显式改变文本缓存，严格 resume 仍检查完整配置�
 `action_teacher_5090_repair_r004.yaml` 用于检验动态叙述是否削弱按键条件：
 它保持 R003 的尺度与学习率，仅替换文本条件，属于未完成画质/控制验证的实验配置。
 
+Causal 训练现要求静态文本 sidecar 的策略、路径、缓存/收据哈希及 `action_scale`
+与父 Action checkpoint 一致，不一致直接报错，不会静默退回旧 narrative。
+LongForcing 与 Demo 素材流程尚未完整接入静态文本，不能把此修补视为端到端贯通。
+R005 是仅将 LoRA 学习率从 0 调至 2e-6 的候选实验，尚未通过画质、控制或 15 秒稳定性验证。
+
 ## CPU 快速检查
 
 Python 3.12；FFmpeg/FFprobe 用于媒体契约测试，不需要 GPU 或模型下载。
