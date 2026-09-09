@@ -7,6 +7,7 @@ import os
 from typing import Any
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 from wan.modules.model import SimpleAdapter, MLPProj, WanI2VCrossAttention
@@ -1562,6 +1563,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         self.init_weights()
         self.gradient_checkpointing = False
+        # Opt-in for multi-forward LongForcing graphs; legacy training keeps
+        # PyTorch's non-reentrant checkpoint implementation.
+        self.gradient_checkpointing_mode = "non_reentrant"
         self.block_mask: BlockMask | None = None
         self._block_mask_cache_key = None
         self._block_mask_cache = {}
@@ -1577,6 +1581,61 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.gradient_checkpointing = enable
         if gradient_checkpointing_func is not None:
             self._gradient_checkpointing_func = gradient_checkpointing_func
+
+    def _checkpoint_train_block(self, block, x, **kwargs):
+        """Checkpoint a no-KV block without retaining mutable forward state.
+
+        Reentrant checkpoint avoids the non-reentrant saved-tensor bookkeeping
+        around compiled FlexAttention.  Its tensor inputs must be positional:
+        closing over modulation/context tensors can lose their gradient paths.
+        """
+        mode = getattr(self, "gradient_checkpointing_mode", "non_reentrant")
+        if mode not in ("non_reentrant", "reentrant"):
+            raise ValueError(f"unknown gradient_checkpointing_mode: {mode!r}")
+        if mode == "non_reentrant":
+            return torch.utils.checkpoint.checkpoint(
+                block, x, **kwargs, use_reentrant=False,
+            )
+
+        names = tuple(kwargs)
+        # These per-call flags are read inside attention.  Another forward may
+        # change them before backward (e.g. TF replay after an endpoint graph).
+        missing = object()
+        attn = block.self_attn
+        state = {
+            name: getattr(attn, name, missing)
+            for name in (
+                "_is_teacher_forcing", "_num_ref_tokens", "_query_ref_token_len",
+                "_ref_num_slots", "_ref_tokens_per_frame", "_ref_grid_sizes",
+            )
+        }
+
+        def custom_forward(activation, _grad_anchor, *values):
+            previous = {name: getattr(attn, name, missing) for name in state}
+            try:
+                for name, value in state.items():
+                    if value is missing:
+                        if hasattr(attn, name):
+                            delattr(attn, name)
+                    else:
+                        setattr(attn, name, value)
+                return block(activation, **dict(zip(names, values)))
+            finally:
+                for name, value in previous.items():
+                    if value is missing:
+                        if hasattr(attn, name):
+                            delattr(attn, name)
+                    else:
+                        setattr(attn, name, value)
+
+        # A frozen patch embedding may produce x without requires_grad.  A
+        # scalar input keeps reentrant autograd active for LoRA/adapter params
+        # without detaching or changing the caller's real activation.
+        anchor = x.new_zeros((), requires_grad=True)
+        return torch.utils.checkpoint.checkpoint(
+            custom_forward, x, anchor, *(kwargs[name] for name in names),
+            use_reentrant=True,
+        )
 
     @staticmethod
     def _frame_block_token_ranges(
@@ -2494,19 +2553,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 current_start=current_start,
             )
 
-            def create_custom_forward(module):
-                def custom_forward(*inputs, **kw):
-                    return module(*inputs, **kw)
-
-                return custom_forward
-
             for block_idx, block in enumerate(self.blocks):
                 try:
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
-                        x = torch.utils.checkpoint.checkpoint(
-                            create_custom_forward(block),
-                            x, **kwargs, use_reentrant=False,
-                        )
+                        x = self._checkpoint_train_block(block, x, **kwargs)
                     else:
                         x = block(x, **kwargs)
                 except Exception as e_block:

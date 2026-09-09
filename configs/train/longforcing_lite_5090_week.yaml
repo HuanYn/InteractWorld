@@ -14,6 +14,7 @@ model:
   downscale_factor_control_adapter: 16
   local_attn_size: -1
   gradient_checkpointing: true
+  gradient_checkpointing_mode: reentrant
 
 data:
   manifest_path: /path/to/interactworld/data/manifests/train.jsonl

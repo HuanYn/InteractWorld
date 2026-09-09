@@ -8,6 +8,10 @@
 LongForcing-lite 是本项目的少步 endpoint 蒸馏实现，**不是完整复现官方 LongForcing/DMD**。
 代码运行成功、训练 loss 下降或视频达到 15 秒，都不等于画质和动作控制已经通过。
 
+week LongForcing 配置使用 reentrant 梯度检查点，保留编译的 FlexAttention，
+并显式保存每次调用的张量输入和注意力状态；其他训练配置的默认行为不变。
+若中断前尚无 checkpoint，保留失败目录并从父权重新建实验；不能将日志中的步数当作可恢复权重。
+
 不包含权重、数据、生成素材、训练日志、服务器配置或操作方授权记录。
 
 ## CPU 快速检查

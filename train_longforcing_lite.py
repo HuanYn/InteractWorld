@@ -433,7 +433,7 @@ def launch(
             "grad_norm": float(grad_norm),
             "samples_per_second": tracker.samples_per_second,
             "peak_vram_bytes": peak_vram_bytes(device),
-            "depth_blocks": curriculum_depth(step, config),
+            "depth_blocks": depth,
             "last_objective": details["objective"],
             **objective_counts,
         }

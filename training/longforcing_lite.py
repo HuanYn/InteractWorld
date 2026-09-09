@@ -58,6 +58,7 @@ class LongForcingModelConfig:
     downscale_factor_control_adapter: int = 16
     local_attn_size: int = -1
     gradient_checkpointing: bool = True
+    gradient_checkpointing_mode: str = "non_reentrant"
 
 
 @dataclass
@@ -168,6 +169,8 @@ class LongForcingConfig:
             errors.append("the action adapter downscale must be 16")
         if self.model.local_attn_size != -1:
             errors.append("v1 uses full attention inside each 49-frame sliding window")
+        if self.model.gradient_checkpointing_mode not in ("non_reentrant", "reentrant"):
+            errors.append("gradient_checkpointing_mode must be non_reentrant or reentrant")
         if tuple(self.data.canonical_action_keys) != CANONICAL_ACTION_KEYS:
             errors.append(f"canonical_action_keys must be exactly {CANONICAL_ACTION_KEYS}")
         if (self.data.height, self.data.width, self.data.fps) != (480, 832, 16):
@@ -883,5 +886,6 @@ def wan_longforcing_backend_factory(
     }
     student = WanDiffusionWrapper(is_causal=True, **common)
     student.model.independent_first_frame = True
+    student.model.gradient_checkpointing_mode = config.model.gradient_checkpointing_mode
     teacher = WanDiffusionWrapper(is_causal=False, **common)
     return WanLongForcingBackend(student=student, teacher=teacher, config=config)

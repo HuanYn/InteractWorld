@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "26bc70160553685d9de25b1044dd8a0d0d4b01f0",
+  "source_revision": "beba32e1400df3d7e0e29dd314b3792bf9294c86",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,8 +30,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "d108022d198b818d17b09abc038fd1890001c6f5badeb9355034078011b59f38",
-      "bytes": 10875,
+      "sha256": "1e1a294fda097c55493586c93cea8156c8dadcfe2157ac3da7e5b432980d6d67",
+      "bytes": 11205,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -70,8 +70,8 @@
       "source_path": "configs/train/causal_teacher_forcing_v1.yaml"
     },
     "configs/train/longforcing_lite_5090_week.yaml": {
-      "sha256": "586dad97ee1bb0db40d446a582f73f1b1263060f2f99954adebd5e8757223059",
-      "bytes": 2352,
+      "sha256": "d2c4608190be4285cb67bd5ee270246b0c3e209b430cd8509008435cea35311a",
+      "bytes": 2393,
       "source_path": "configs/train/longforcing_lite_5090_week.yaml"
     },
     "configs/train/longforcing_lite_v1.yaml": {
@@ -184,6 +184,11 @@
       "bytes": 7465,
       "source_path": "tests/test_causal_flow_solver.py"
     },
+    "tests/test_causal_reentrant_checkpoint.py": {
+      "sha256": "8509eca900aaf74e43cfa814f8a5391ce2cbecf245b5f10b3cdbeb7da7667889",
+      "bytes": 7435,
+      "source_path": "tests/test_causal_reentrant_checkpoint.py"
+    },
     "tests/test_causal_tf.py": {
       "sha256": "9877e926f830bd385529eb5bcd6093e6a56820e2811ed28c1d234ffed64c00f7",
       "bytes": 12425,
@@ -245,8 +250,8 @@
       "source_path": "train_causal_teacher_forcing.py"
     },
     "train_longforcing_lite.py": {
-      "sha256": "da78ae19039b035193fc743194809c3f2705448a3b18dc40693031b5a532d7da",
-      "bytes": 20065,
+      "sha256": "e3ae3ef5258adccc173c65047ae5ed38edb92ca1e93053a776f832cd94823057",
+      "bytes": 20040,
       "source_path": "train_longforcing_lite.py"
     },
     "training/causal_tf.py": {
@@ -325,8 +330,8 @@
       "source_path": "training/gpu_gate.py"
     },
     "training/longforcing_lite.py": {
-      "sha256": "2a559131160da0cd7565f3cf279f0a77ccf76adfa4bc62cbdda55dfc49a4f089",
-      "bytes": 38451,
+      "sha256": "2136d854e2c7a5413a950a178e744f5bf0eb7a8a1852f0adde4270d8419b314b",
+      "bytes": 38776,
       "source_path": "training/longforcing_lite.py"
     },
     "training/models/__init__.py": {
@@ -400,8 +405,8 @@
       "source_path": "wan/modules/attention.py"
     },
     "wan/modules/causal_model.py": {
-      "sha256": "c50f1824b0e07b296060cc015d67c5a9492af872eb3c73c751eec0744d935629",
-      "bytes": 112692,
+      "sha256": "046b574209e8a0476d02deecfddb257a4baad6a8424f6469d547589c553fbc58",
+      "bytes": 115105,
       "source_path": "wan/modules/causal_model.py"
     },
     "wan/modules/helios_kernels/__init__.py": {
@@ -470,5 +475,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1007486
+  "source_bytes": 1018005
 }
