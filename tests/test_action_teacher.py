@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,8 @@ from train_action_teacher import (
     _forward_loss,
     _iterator_at_micro_batch,
     _load_gate_checkpoint,
+    _load_warm_start_checkpoint,
+    parse_args,
 )
 from utils.action_alignment import expand_frame_conditioning_to_tokens, reset_missing_action_adapter
 
@@ -358,3 +362,189 @@ def test_completed_gate20_can_initialize_full_run_without_repeating_steps(tmp_pa
     wrong["feature_index"] = "different"
     with pytest.raises(ValueError, match="feature_index mismatch"):
         _load_gate_checkpoint(checkpoint, config=config, current_manifest_hashes=wrong)
+
+
+def _warm_start_fixture(tmp_path: Path):
+    config = load_config(CONFIG_PATH)
+    config.training.output_dir = str(tmp_path / "repair")
+    source_config = config.to_dict()
+    source_config["training"]["output_dir"] = str(tmp_path / "old-run")
+    hashes = {
+        "dataset_manifest": "manifest",
+        "feature_index": "index",
+        "feature_receipt": "receipt",
+        "training_config": "repair-config",
+    }
+    model = _TinyWan()
+    configure_action_teacher(model)
+    state = {
+        name: torch.full_like(parameter, 0.25)
+        for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    payload = {
+        "format_version": 1,
+        "stage": "action_teacher_lora_v1",
+        "step": 840,
+        "micro_batches_consumed": 6720,
+        "trainable_model": state,
+        "optimizer": {"must_not_be_restored": True},
+        "torch_rng_state": torch.tensor([255], dtype=torch.uint8),
+        "cuda_rng_state_all": [torch.tensor([255], dtype=torch.uint8)],
+        "config": source_config,
+        "manifest_hashes": {**hashes, "training_config": "source-config"},
+    }
+    path = tmp_path / "source-best840.pt"
+    torch.save(payload, path)
+    return config, hashes, path, payload
+
+
+@pytest.mark.parametrize("other", ["--resume", "--initialize-from"])
+def test_warm_start_cli_is_mutually_exclusive_with_existing_resume_modes(other: str) -> None:
+    args = parse_args(["--warm-start-from", "source.pt"])
+    assert args.warm_start_from == "source.pt"
+    with pytest.raises(SystemExit):
+        parse_args(["--warm-start-from", "source.pt", other, "other.pt"])
+
+
+def test_warm_start_accepts_new_scale_and_optimizer_but_returns_weights_only(tmp_path: Path) -> None:
+    config, hashes, path, source = _warm_start_fixture(tmp_path)
+    config.model.action_scale = 0.03
+    config.optimizer.adapter_lr = 2e-5
+    config.optimizer.lora_lr = 0.0
+    config.training.max_steps = 240
+    state, lineage = _load_warm_start_checkpoint(
+        path, config=config, current_manifest_hashes=hashes,
+    )
+    assert set(state) == set(source["trainable_model"])
+    assert all(torch.equal(value, source["trainable_model"][name]) for name, value in state.items())
+    assert lineage["sha256"] == sha256_file(path)
+    assert lineage["source_step"] == 840
+    assert lineage["source_stage"] == "action_teacher_lora_v1"
+    assert lineage["source_config"] == source["config"]
+    assert lineage["source_manifest_hashes"] == source["manifest_hashes"]
+    assert lineage["source_config"]["model"]["action_scale"] == 1.0
+    assert lineage["mode"] == "warm_start_weights_only"
+    assert lineage["optimizer_restored"] is False
+    assert lineage["rng_restored"] is False
+    assert lineage["start_step"] == lineage["micro_batches_consumed"] == 0
+    assert "optimizer" not in state and "torch_rng_state" not in state
+
+
+@pytest.mark.parametrize("field", ["base_model_path", "lora_alpha", "action_dim", "timestep_shift"])
+def test_warm_start_rejects_changed_model_contract(tmp_path: Path, field: str) -> None:
+    config, hashes, path, payload = _warm_start_fixture(tmp_path)
+    payload["config"]["model"][field] = "different"
+    torch.save(payload, path)
+    with pytest.raises(ValueError, match="model architecture/conditioning"):
+        _load_warm_start_checkpoint(path, config=config, current_manifest_hashes=hashes)
+
+
+@pytest.mark.parametrize("field", ["dataset_manifest", "feature_index", "feature_receipt"])
+def test_warm_start_rejects_changed_cache_binding(tmp_path: Path, field: str) -> None:
+    config, hashes, path, _ = _warm_start_fixture(tmp_path)
+    hashes[field] = "different"
+    with pytest.raises(ValueError, match=f"{field} mismatch"):
+        _load_warm_start_checkpoint(path, config=config, current_manifest_hashes=hashes)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("stage", "causal_teacher_forcing_v1", "action_teacher_lora_v1"),
+        ("step", 0, "positive optimizer step"),
+        ("step", True, "positive optimizer step"),
+        ("trainable_model", {}, "no trainable model state"),
+        ("trainable_model", {"weight": "not a tensor"}, "map parameter names to tensors"),
+    ],
+)
+def test_warm_start_rejects_invalid_parent(tmp_path: Path, field, value, message) -> None:
+    config, hashes, path, payload = _warm_start_fixture(tmp_path)
+    payload[field] = value
+    torch.save(payload, path)
+    with pytest.raises(ValueError, match=message):
+        _load_warm_start_checkpoint(path, config=config, current_manifest_hashes=hashes)
+
+
+def test_warm_start_launch_starts_at_zero_with_fresh_optimizer_rng_and_saved_lineage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import train_action_teacher as entry
+
+    config, hashes, path, source = _warm_start_fixture(tmp_path)
+    config.model.action_scale = 0.03
+    config.optimizer.lora_lr = 0.0
+    config.training.max_steps = 1
+    parent_hash = sha256_file(path)
+    model = _TinyWan()
+    summary = configure_action_teacher(model)
+    seen_batches = []
+    optimizer = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr=0.0)
+
+    def reject_restore(*args, **kwargs):
+        raise AssertionError("warm start must not restore parent optimizer/RNG")
+
+    monkeypatch.setattr(optimizer, "load_state_dict", reject_restore)
+    monkeypatch.setattr(torch.cuda, "set_rng_state_all", reject_restore)
+    monkeypatch.setattr(torch, "set_rng_state", reject_restore)
+    monkeypatch.setattr(entry, "validate_confirmation", lambda value: None)
+    monkeypatch.setattr(entry, "query_dedicated_gpu", lambda **kwargs: types.SimpleNamespace(as_dict=lambda: {}))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for name in ("set_device", "reset_peak_memory_stats"):
+        monkeypatch.setattr(torch.cuda, name, lambda *args, **kwargs: None)
+    for name in ("memory_allocated", "memory_reserved"):
+        monkeypatch.setattr(torch.cuda, name, lambda *args, **kwargs: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *args: "CPU test fixture")
+    monkeypatch.setattr(torch.cuda, "get_rng_state_all", lambda: [])
+    monkeypatch.setattr(entry, "peak_vram_bytes", lambda device: 0)
+    seeds = []
+    monkeypatch.setattr(entry, "seed_everything", seeds.append)
+    monkeypatch.setattr(entry, "_manifest_hashes", lambda *args: hashes)
+    monkeypatch.setattr(entry, "_build_model", lambda *args: (model, summary))
+    monkeypatch.setattr(entry, "_build_optimizer", lambda *args: optimizer)
+    monkeypatch.setattr(entry, "_import_factory", lambda spec: lambda **kwargs: list(range(8)))
+    monkeypatch.setattr(torch, "autocast", lambda *args, **kwargs: nullcontext())
+
+    def fake_loss(model, batch, config, device):
+        seen_batches.append(batch)
+        for name, parameter in model.named_parameters():
+            if parameter.requires_grad:
+                assert torch.equal(parameter, source["trainable_model"][name])
+        return sum(p.square().sum() for p in model.parameters() if p.requires_grad)
+
+    monkeypatch.setattr(entry, "_forward_loss", fake_loss)
+    entry.launch(
+        config, CONFIG_PATH, None, None,
+        confirmed_gpu_index=0, confirmed_gpu_uuid="cpu-fixture",
+        confirmed_at_utc="cpu-fixture", allocation_profile="cpu-fixture",
+        warm_start_from=str(path),
+    )
+    assert seeds == [42]
+    assert seen_batches == list(range(8))
+    saved = torch.load(
+        Path(config.training.output_dir) / "checkpoints" / "step-0000001.pt",
+        weights_only=False,
+    )
+    assert saved["step"] == 1
+    assert saved["micro_batches_consumed"] == 8
+    assert saved["config"]["model"]["action_scale"] == 0.03
+    assert saved["optimizer"]["state"] == {}
+    assert saved["initialization"]["source_step"] == 840
+    assert saved["initialization"]["sha256"] == parent_hash
+    assert saved["initialization"]["optimizer_restored"] is False
+    assert saved["initialization"]["rng_restored"] is False
+    metadata = json.loads((Path(config.training.output_dir) / "run_metadata.json").read_text())
+    assert metadata["initialization"] == json.loads(json.dumps(saved["initialization"]))
+    assert sha256_file(path) == parent_hash
+
+
+def test_warm_start_launch_rejects_conflicting_modes_before_gpu_gate() -> None:
+    from train_action_teacher import launch
+
+    config = load_config(CONFIG_PATH)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        launch(
+            config, CONFIG_PATH, "resume.pt", None,
+            warm_start_from="parent.pt", confirmed_gpu_index=0,
+            confirmed_gpu_uuid="no-gpu", confirmed_at_utc="no-gpu",
+            allocation_profile="no-gpu",
+        )

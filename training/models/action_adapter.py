@@ -10,6 +10,8 @@ explicit and testable without loading model weights.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import math
+from numbers import Real
 
 import torch
 
@@ -22,11 +24,22 @@ __all__ = [
     "build_action_context",
     "inject_action_features",
     "pack_canonical_actions",
+    "validate_action_scale",
 ]
 
 CANONICAL_ACTION_KEYS: tuple[str, ...] = ("W", "A", "S", "D", "I", "J", "K", "L")
 RGB_FRAMES_PER_ACTION_TOKEN = 4
 ACTION_DIM = len(CANONICAL_ACTION_KEYS) * RGB_FRAMES_PER_ACTION_TOKEN
+
+
+def validate_action_scale(value: object) -> float:
+    """Validate a residual multiplier; zero is diagnostic, not working control."""
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError("action_scale must be a finite nonnegative number")
+    scale = float(value)
+    if not math.isfinite(scale) or scale < 0:
+        raise ValueError("action_scale must be a finite nonnegative number")
+    return scale
 
 
 def canonical_action_vector(action: Mapping[str, object]) -> list[float]:

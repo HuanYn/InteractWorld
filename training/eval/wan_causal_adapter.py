@@ -26,6 +26,7 @@ from training.eval.rollout15s import (
 )
 from training.runtime import sha256_file
 from training.paths import is_pinned_base_model
+from training.models.action_adapter import validate_action_scale
 
 LONGFORCING_STAGE = "longforcing_lite_v1"
 
@@ -56,6 +57,7 @@ class WanCausalRolloutAdapter:
         checkpoint_stage: str,
         width: int = 832,
         height: int = 480,
+        action_scale: float = 1.0,
     ) -> None:
         self.pipeline = pipeline
         self.torch = torch_module
@@ -65,6 +67,7 @@ class WanCausalRolloutAdapter:
         self.checkpoint_stage = checkpoint_stage
         self.width = width
         self.height = height
+        self.action_scale = validate_action_scale(action_scale)
         self.latent_height = height // 16
         self.latent_width = width // 16
         self.latent_channels = 48
@@ -189,7 +192,7 @@ class WanCausalRolloutAdapter:
             "prompt_embeds": self._prompt_cache[scene.prompt]
         }
         initial_latent = self._encode_initial(initial_frame)
-        self.pipeline.conditional_dict["act_context_scale"] = 1.0
+        self.pipeline.conditional_dict["act_context_scale"] = self.action_scale
         self.pipeline.conditional_dict["act_context"] = None
         self._initialize_generation(initial_latent)
         self._prime_vae(initial_latent)
@@ -324,6 +327,8 @@ def create_wan_causal_adapter(
         raise ValueError("rollout checkpoint must contain a mapping")
     stage = str(payload.get("stage"))
     steps = _denoising_steps(stage)
+    model_config = payload.get("config", {}).get("model", {})
+    action_scale = validate_action_scale(model_config.get("action_scale", 1.0))
     longforcing_config = None
     if stage == LONGFORCING_STAGE:
         from training.longforcing_lite import longforcing_config_from_dict
@@ -365,7 +370,6 @@ def create_wan_causal_adapter(
     )
     pipeline = CausalInferencePipeline(config, device=target)
     pipeline.generator.model.independent_first_frame = True
-    model_config = payload.get("config", {}).get("model", {})
     configure_action_teacher(
         pipeline.generator.model,
         rank=int(model_config.get("lora_rank", 16)),
@@ -403,4 +407,5 @@ def create_wan_causal_adapter(
         checkpoint_path=checkpoint_path,
         checkpoint_sha256=checkpoint_sha256,
         checkpoint_stage=stage,
+        action_scale=action_scale,
     )

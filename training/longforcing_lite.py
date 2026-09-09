@@ -21,7 +21,7 @@ import torch
 from torch import nn
 
 from training.models.action_adapter import ACTION_DIM, CANONICAL_ACTION_KEYS
-from training.models.action_adapter import build_action_context
+from training.models.action_adapter import build_action_context, validate_action_scale
 from training.models.lora import (
     TrainableSummary,
     configure_action_teacher,
@@ -50,6 +50,7 @@ class LongForcingModelConfig:
     lora_alpha: float = 16.0
     lora_dropout: float = 0.0
     action_dim: int = ACTION_DIM
+    action_scale: float = 1.0
     latent_channels: int = 48
     temporal_compression: int = 4
     spatial_compression: int = 16
@@ -155,6 +156,10 @@ class LongForcingConfig:
 
     def validate(self) -> None:
         errors: list[str] = []
+        try:
+            validate_action_scale(self.model.action_scale)
+        except ValueError as exc:
+            errors.append(str(exc))
         if not is_pinned_base_model(self.model.base_model_path):
             errors.append("base_model_path must be the pinned Wan2.2-TI2V-5B revision")
         if self.model.model_type != "ci2v":
@@ -744,7 +749,7 @@ class WanLongForcingWindowStudent:
             context=self._prompt_list(conditions),
             seq_len=None,
             act_context=action_context,
-            act_context_scale=1.0,
+            act_context_scale=self.config.model.action_scale,
             current_start=global_start * tokens_per_frame,
         )
         if isinstance(output, tuple):
@@ -771,7 +776,7 @@ class WanLongForcingBackend(WanLongForcingWindowStudent):
 
         replay = CausalTeacherForcingConfig()
         replay.model.base_model_path = config.model.base_model_path
-        replay.model.action_scale = 1.0
+        replay.model.action_scale = config.model.action_scale
         replay.model.latent_channels = config.model.latent_channels
         replay.model.spatial_compression = config.model.spatial_compression
         replay.data.height = config.data.height
@@ -841,7 +846,7 @@ class WanLongForcingBackend(WanLongForcingWindowStudent):
             context=self._prompt_list(conditions),
             seq_len=None,
             act_context=action_context,
-            act_context_scale=1.0,
+            act_context_scale=self.config.model.action_scale,
         )
         if isinstance(output, tuple):
             output = output[0]

@@ -26,6 +26,7 @@ from training.longforcing_lite import (
     is_flowmatch_replay,
     load_longforcing_config,
     load_parent_checkpoints,
+    longforcing_config_from_dict,
     longforcing_lite_loss,
     rgb_frames_for_blocks,
 )
@@ -47,6 +48,26 @@ def test_config_encodes_lite_not_dmd_and_15_second_contract() -> None:
     assert config.data.short_window_frames == rgb_frames_for_blocks(4, config) == 49
     assert config.data.demo_rollout_frames == rgb_frames_for_blocks(20, config) == 241
     assert (config.data.demo_rollout_frames - 1) / config.data.fps == 15.0
+    assert config.model.action_scale == 1.0
+
+
+@pytest.mark.parametrize("scale", [0.0, 0.03, 1.0])
+def test_action_scale_roundtrips_with_saved_config_and_legacy_default(scale) -> None:
+    config = load_longforcing_config(CONFIG_PATH)
+    config.model.action_scale = scale
+    restored = longforcing_config_from_dict(config.to_dict())
+    assert restored.model.action_scale == scale
+    legacy = config.to_dict()
+    legacy["model"].pop("action_scale")
+    assert longforcing_config_from_dict(legacy).model.action_scale == 1.0
+
+
+@pytest.mark.parametrize("scale", [-0.1, float("nan"), float("inf"), True, "0.03", None])
+def test_invalid_action_scale_fails_config_validation(scale) -> None:
+    config = load_longforcing_config(CONFIG_PATH)
+    config.model.action_scale = scale
+    with pytest.raises(ValueError, match="action_scale must be a finite nonnegative number"):
+        config.validate()
 
 
 def test_curriculum_and_replay_schedule_are_exact_and_resume_stable() -> None:
@@ -161,8 +182,10 @@ class _FakeWanWrapper(nn.Module):
         self.uniform_timestep = not causal
 
 
-def test_real_backend_uses_aligned_four_block_sliding_window() -> None:
+@pytest.mark.parametrize("scale", [1.0, 0.03])
+def test_real_backend_uses_aligned_four_block_sliding_window(scale) -> None:
     config = load_longforcing_config(CONFIG_PATH)
+    config.model.action_scale = scale
     config.model.latent_channels = 2
     config.data.height = 32
     config.data.width = 32
@@ -188,6 +211,9 @@ def test_real_backend_uses_aligned_four_block_sliding_window() -> None:
     assert student_kwargs["t"].shape == (1, 12)
     assert torch.count_nonzero(student_kwargs["t"][:, :-3]).item() == 0
     assert len(conditions["_longforcing_action_context_cache"]) == 1
+    assert student_kwargs["act_context_scale"] == scale
+    assert teacher.model.calls[-1][1]["act_context_scale"] == scale
+    assert backend._replay_config.model.action_scale == scale
 
     earlier = dict(kwargs, block_index=3, history=torch.zeros(1, 10, 2, 2, 2))
     backend.student_velocity(**earlier)
@@ -333,6 +359,28 @@ def test_checkpoint_resume_restores_exact_microbatch_and_schedule_state(tmp_path
         config=config,
     )
     assert (step, consumed) == (2, 16)
+    assert payload["config"]["model"]["action_scale"] == 1.0
+    # Legacy checkpoints without the field retain their original hard-coded 1.0.
+    payload["config"]["model"].pop("action_scale")
+    torch.save(payload, path)
+    assert _restore_resume(
+        path, model=model, optimizer=optimizer, hashes=hashes,
+        teacher_lineage=teacher, causal_lineage=causal, config=config,
+    ) == (2, 16)
+    config.model.action_scale = 0.03
+    with pytest.raises(ValueError, match="resume action_scale changed"):
+        _restore_resume(
+            path, model=model, optimizer=optimizer, hashes=hashes,
+            teacher_lineage=teacher, causal_lineage=causal, config=config,
+        )
+    payload["config"]["model"]["action_scale"] = 0.03
+    torch.save(payload, path)
+    assert _restore_resume(
+        path, model=model, optimizer=optimizer, hashes=hashes,
+        teacher_lineage=teacher, causal_lineage=causal, config=config,
+    ) == (2, 16)
+    config.model.action_scale = 1.0
+    payload["config"]["model"]["action_scale"] = 1.0
     payload["replay_phase"] = 1
     torch.save(payload, path)
     with pytest.raises(ValueError, match="replay phase"):

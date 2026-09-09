@@ -20,6 +20,7 @@ from training.models.action_adapter import (
     CANONICAL_ACTION_KEYS,
     RGB_FRAMES_PER_ACTION_TOKEN,
     build_action_context,
+    validate_action_scale,
 )
 from training.models.lora import (
     TrainableSummary,
@@ -123,6 +124,10 @@ class CausalTeacherForcingConfig:
 
     def validate(self) -> None:
         errors: list[str] = []
+        try:
+            validate_action_scale(self.model.action_scale)
+        except ValueError as exc:
+            errors.append(str(exc))
         if not is_pinned_base_model(self.model.base_model_path):
             errors.append("base_model_path must be the pinned Wan2.2-TI2V-5B revision")
         if self.model.model_type != "ci2v":

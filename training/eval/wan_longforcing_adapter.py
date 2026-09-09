@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from training.eval.wan_causal_adapter import LONGFORCING_STAGE, WanCausalRolloutAdapter
+from training.models.action_adapter import validate_action_scale
 from training.longforcing_lite import (
     LongForcingConfig,
     WanLongForcingWindowStudent,
@@ -21,6 +22,12 @@ class WanLongForcingRolloutAdapter(WanCausalRolloutAdapter):
     context_mode = "sliding_window_recompute"
 
     def __init__(self, *, longforcing_config: LongForcingConfig, **kwargs: Any):
+        requested_scale = validate_action_scale(
+            kwargs.pop("action_scale", longforcing_config.model.action_scale)
+        )
+        if requested_scale != longforcing_config.model.action_scale:
+            raise ValueError("LongForcing inference action_scale must match the saved configuration")
+        kwargs["action_scale"] = longforcing_config.model.action_scale
         super().__init__(**kwargs)
         if self.checkpoint_stage != LONGFORCING_STAGE:
             raise ValueError("window-recompute inference requires a LongForcing checkpoint")

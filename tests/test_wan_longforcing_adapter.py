@@ -65,8 +65,9 @@ class _Text:
         return {"prompt_embeds": self.prompt}
 
 
-def _fixture():
+def _fixture(action_scale=1.0, **adapter_kwargs):
     config = load_longforcing_config(CONFIG_PATH)
+    config.model.action_scale = action_scale
     config.data.height, config.data.width = 32, 64
     pipeline = SimpleNamespace(
         args=SimpleNamespace(streaming_solver="flow_euler"),
@@ -79,6 +80,7 @@ def _fixture():
         pipeline=pipeline, torch_module=torch, device="cpu",
         checkpoint_path="unused", checkpoint_sha256="unused", checkpoint_stage=LONGFORCING_STAGE,
         width=64, height=32, longforcing_config=config,
+        **adapter_kwargs,
     )
     return adapter, pipeline, config
 
@@ -109,11 +111,14 @@ def test_shared_training_methods_and_exact_four_step_endpoint():
     assert len(pipeline.generator.model.calls) == 4
 
 
-def test_stream_crosses_four_to_five_block_boundary_without_kv_or_future_data():
-    adapter, pipeline, config = _fixture()
+@pytest.mark.parametrize("scale", [1.0, 0.03])
+def test_stream_crosses_four_to_five_block_boundary_without_kv_or_future_data(scale):
+    adapter, pipeline, config = _fixture(action_scale=scale)
     scene = SceneSpec("toy", "shared prompt", "unused", "never-read", 42, ())
     initial = np.zeros((32, 64, 3), dtype=np.uint8)
     cursor = adapter.begin(scene=scene, initial_frame=initial, variant="preview", seed=42)
+    assert adapter.action_scale == scale
+    assert pipeline.conditional_dict["act_context_scale"] == scale
     all_actions = []
     for block in range(5):
         history = adapter._latent_history.clone()
@@ -127,6 +132,7 @@ def test_stream_crosses_four_to_five_block_boundary_without_kv_or_future_data():
         assert chunk.parent_state_token == cursor.state_token
         cursor = chunk.cursor
         x, kwargs, grad_enabled = pipeline.generator.model.calls[block * 4]
+        assert kwargs["act_context_scale"] == scale
         assert not grad_enabled
         assert len(pipeline.generator.model.calls) == (block + 1) * 4
         expected_history = history if block < 4 else history[:, -9:]
@@ -159,7 +165,8 @@ def test_stream_crosses_four_to_five_block_boundary_without_kv_or_future_data():
         adapter.generate_next(cursor=old_cursor, actions=actions, chunk_index=5, latent_frames=3, rgb_frames=12)
 
 
-def test_factory_dispatch_keeps_causal_full_kv_and_long_window_only():
+@pytest.mark.parametrize("scale", [None, 1.0, 0.03])
+def test_factory_dispatch_keeps_causal_full_kv_and_long_window_only(scale):
     def namespace(value):
         return SimpleNamespace(**{key: namespace(item) for key, item in value.items()}) if isinstance(value, dict) else value
 
@@ -190,6 +197,10 @@ def test_factory_dispatch_keeps_causal_full_kv_and_long_window_only():
     assert longforcing_config_from_dict(config.to_dict()).to_dict() == config.to_dict()
     for stage in (EXPECTED_STAGE, LONGFORCING_STAGE):
         payload = {"stage": stage, "config": config.to_dict(), "trainable_model": {"toy": torch.zeros(1)}}
+        if scale is None:
+            payload["config"]["model"].pop("action_scale")
+        else:
+            payload["config"]["model"]["action_scale"] = scale
         with patch.dict("sys.modules", {"pipeline.causal_inference": fake_pipeline_module, "omegaconf": fake_omegaconf}), \
              patch("training.eval.wan_causal_adapter.sha256_file", return_value="abc"), \
              patch.object(torch.cuda, "is_available", return_value=True), \
@@ -207,3 +218,19 @@ def test_factory_dispatch_keeps_causal_full_kv_and_long_window_only():
             assert type(adapter) is WanLongForcingRolloutAdapter
             assert adapter.pipeline.args.image_or_video_shape[1] == 13
         assert adapter.pipeline.kv_cache1 is None and adapter.pipeline.crossattn_cache is None
+        assert adapter.action_scale == (1.0 if scale is None else scale)
+
+
+@pytest.mark.parametrize("scale", [-0.1, float("nan"), float("inf"), True, "0.03"])
+def test_inference_rejects_invalid_action_scale_before_using_pipeline(scale):
+    with pytest.raises(ValueError, match="action_scale must be a finite nonnegative number"):
+        WanCausalRolloutAdapter(
+            pipeline=None, torch_module=torch, device="cpu", checkpoint_path="unused",
+            checkpoint_sha256="unused", checkpoint_stage=EXPECTED_STAGE, action_scale=scale,
+        )
+
+
+def test_long_inference_rejects_scale_override_that_differs_from_saved_config():
+    config = load_longforcing_config(CONFIG_PATH)
+    with pytest.raises(ValueError, match="action_scale must match the saved configuration"):
+        WanLongForcingRolloutAdapter(longforcing_config=config, action_scale=0.03)

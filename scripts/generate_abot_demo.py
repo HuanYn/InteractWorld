@@ -100,6 +100,7 @@ def main():
                 "solver": getattr(pipeline.args, "streaming_solver", "renoise"),
                 "timesteps": pipeline.denoising_step_list.tolist(),
                 "context_mode": getattr(adapter, "context_mode", "unspecified"),
+                "action_scale": getattr(adapter, "action_scale", None),
             }
         for scene in config.scenes[:args.scene_count]:
             import torch

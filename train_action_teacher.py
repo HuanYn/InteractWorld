@@ -78,6 +78,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="completed gate20 checkpoint used to continue in a fresh full-run directory",
     )
+    checkpoint.add_argument(
+        "--warm-start-from",
+        default=None,
+        help="action-teacher weights only; new optimizer, RNG, step zero, and output directory",
+    )
     parser.add_argument("--confirmed-gpu-index", type=int)
     parser.add_argument("--confirmed-gpu-uuid")
     parser.add_argument("--confirmed-at-utc")
@@ -335,6 +340,7 @@ def _checkpoint_payload(
     micro_batches_consumed: int,
     metrics: dict[str, Any],
     manifest_hashes: dict[str, str],
+    initialization: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "format_version": 1,
@@ -349,6 +355,8 @@ def _checkpoint_payload(
         "torch_rng_state": torch.get_rng_state(),
         "cuda_rng_state_all": torch.cuda.get_rng_state_all(),
     }
+    if initialization is not None:
+        payload["initialization"] = dict(initialization)
     return payload
 
 
@@ -454,6 +462,79 @@ def _load_gate_checkpoint(
     return payload
 
 
+def _load_warm_start_checkpoint(
+    path: str | Path,
+    *,
+    config: ActionTeacherConfig,
+    current_manifest_hashes: Mapping[str, str],
+) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    """Load only compatible Action weights, never resumable training state.
+
+    The same base, LoRA, tensor layout, conditioning, and data contracts are
+    required. Action scale and activation checkpointing may change, as may
+    the optimizer and fresh-run training settings. Exact tensor names/shapes
+    are additionally checked by ``load_trainable_state_dict`` on the model.
+    """
+    source = Path(path).resolve()
+    source_sha256 = sha256_file(source)
+    payload = torch.load(source, map_location="cpu", weights_only=False)
+    if sha256_file(source) != source_sha256:
+        raise ValueError("warm-start checkpoint changed while loading")
+    if not isinstance(payload, Mapping):
+        raise ValueError("warm-start checkpoint must contain a mapping")
+    if payload.get("format_version") != 1 or payload.get("stage") != "action_teacher_lora_v1":
+        raise ValueError("warm-start requires an action_teacher_lora_v1 format_version=1 checkpoint")
+    step = payload.get("step")
+    if isinstance(step, bool) or not isinstance(step, int) or step <= 0:
+        raise ValueError("warm-start checkpoint must have a positive optimizer step")
+    source_hashes = payload.get("manifest_hashes")
+    if not isinstance(source_hashes, Mapping):
+        raise ValueError("warm-start checkpoint has no manifest hashes")
+    for key in SHARED_DATA_HASH_KEYS:
+        expected = current_manifest_hashes.get(key)
+        if not expected or source_hashes.get(key) != expected:
+            raise ValueError(f"warm-start checkpoint {key} mismatch")
+    source_config = payload.get("config")
+    if not isinstance(source_config, Mapping):
+        raise ValueError("warm-start checkpoint has no serialized configuration")
+    source_model = source_config.get("model")
+    if not isinstance(source_model, Mapping):
+        raise ValueError("warm-start checkpoint has no serialized model configuration")
+    current_config = config.to_dict()
+    source_model_contract = dict(source_model)
+    current_model_contract = dict(current_config["model"])
+    for field in ("action_scale", "gradient_checkpointing"):
+        source_model_contract.pop(field, None)
+        current_model_contract.pop(field, None)
+    if source_model_contract != current_model_contract:
+        raise ValueError("warm-start checkpoint model architecture/conditioning contract differs")
+    if source_config.get("data") != current_config["data"]:
+        raise ValueError("warm-start checkpoint data contract differs")
+    state = payload.get("trainable_model")
+    if not isinstance(state, Mapping) or not state:
+        raise ValueError("warm-start checkpoint has no trainable model state")
+    if any(not isinstance(name, str) or not torch.is_tensor(value) for name, value in state.items()):
+        raise ValueError("warm-start trainable model must map parameter names to tensors")
+    initialization = {
+        "mode": "warm_start_weights_only",
+        "path": str(source),
+        "sha256": source_sha256,
+        "source_stage": payload["stage"],
+        "source_step": step,
+        "source_config": dict(source_config),
+        "source_manifest_hashes": dict(source_hashes),
+        "source_initialization": payload.get("initialization"),
+        "optimizer_restored": False,
+        "rng_restored": False,
+        "start_step": 0,
+        "micro_batches_consumed": 0,
+        "seed": config.training.seed,
+    }
+    # Returning only weights and provenance lets the unused old optimizer/RNG
+    # tensors be released; neither can accidentally enter the new run.
+    return dict(state), initialization
+
+
 def launch(
     config: ActionTeacherConfig,
     config_path: str | Path,
@@ -464,7 +545,10 @@ def launch(
     confirmed_gpu_uuid: str,
     confirmed_at_utc: str,
     allocation_profile: str,
+    warm_start_from: str | None = None,
 ) -> None:
+    if sum(value is not None for value in (resume, initialize_from, warm_start_from)) > 1:
+        raise ValueError("resume, initialize_from, and warm_start_from are mutually exclusive")
     validate_confirmation(confirmed_at_utc)
     gpu_snapshot = query_dedicated_gpu(
         confirmed_index=confirmed_gpu_index,
@@ -485,6 +569,21 @@ def launch(
             config=config,
             current_manifest_hashes=manifest_hashes,
         )
+    warm_start_state = None
+    initialization = (
+        {
+            "mode": "continue_completed_gate20",
+            "path": str(Path(initialize_from).resolve()),
+            "sha256": sha256_file(initialize_from),
+            "step": GATE_COMPLETION_STEP,
+        }
+        if initialize_from is not None
+        else {"mode": "same_run_resume" if resume is not None else "fresh_base"}
+    )
+    if warm_start_from is not None:
+        warm_start_state, initialization = _load_warm_start_checkpoint(
+            warm_start_from, config=config, current_manifest_hashes=manifest_hashes,
+        )
     output_dir = Path(config.training.output_dir)
     if resume is None and output_dir.exists() and any(output_dir.iterdir()):
         raise RuntimeError(
@@ -501,16 +600,7 @@ def launch(
         "git_revision": git_revision(Path(__file__).parent),
         "config": config.to_dict(),
         "manifest_hashes": manifest_hashes,
-        "initialization": (
-            {
-                "mode": "continue_completed_gate20",
-                "path": str(Path(initialize_from).resolve()),
-                "sha256": sha256_file(initialize_from),
-                "step": GATE_COMPLETION_STEP,
-            }
-            if initialize_from is not None
-            else {"mode": "same_run_resume" if resume is not None else "fresh_base"}
-        ),
+        "initialization": initialization,
         "seed": config.training.seed,
         "device": torch.cuda.get_device_name(device),
         "gpu_state": {
@@ -537,6 +627,19 @@ def launch(
             expected_manifest_hashes=manifest_hashes,
             map_location="cpu",
         )
+        # Preserve a repaired run's original weight lineage across strict resumes.
+        initialization = checkpoint.get("initialization", initialization)
+        if not isinstance(initialization, Mapping):
+            raise ValueError("resume checkpoint initialization provenance must be a mapping")
+        metadata["initialization"] = dict(initialization)
+        metadata["resumed_from"] = {
+            "path": str(Path(resume).resolve()),
+            "sha256": sha256_file(resume),
+            "step": int(checkpoint["step"]),
+        }
+        (output_dir / "run_metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
+        )
         load_trainable_state_dict(model, checkpoint["trainable_model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         torch.set_rng_state(checkpoint["torch_rng_state"])
@@ -557,6 +660,9 @@ def launch(
         torch.cuda.set_rng_state_all(gate_checkpoint["cuda_rng_state_all"])
         start_step = GATE_COMPLETION_STEP
         micro_batches_consumed = int(gate_checkpoint["micro_batches_consumed"])
+    elif warm_start_state is not None:
+        load_trainable_state_dict(model, warm_start_state)
+        del warm_start_state
     checkpoint_manager = CheckpointManager(output_dir, keep_last=config.training.keep_last)
 
     print(
@@ -626,6 +732,7 @@ def launch(
                     micro_batches_consumed=micro_step,
                     metrics=metrics,
                     manifest_hashes=manifest_hashes,
+                    initialization=initialization,
                 ),
                 step=global_step,
                 metric=mean_loss,
@@ -642,6 +749,7 @@ def launch(
                 micro_batches_consumed=micro_step,
                 metrics=metrics,
                 manifest_hashes=manifest_hashes,
+                initialization=initialization,
             ),
             step=global_step,
             metric=mean_loss,
@@ -673,6 +781,7 @@ def main(argv: list[str] | None = None) -> int:
         confirmed_gpu_uuid=args.confirmed_gpu_uuid,
         confirmed_at_utc=args.confirmed_at_utc,
         allocation_profile=args.allocation_profile,
+        warm_start_from=args.warm_start_from,
     )
     return 0
 

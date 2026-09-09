@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "1e1da145c863defe90be958bddbb720054186a56",
+  "source_revision": "e36d91f4f06645413e0a7b080678caf51470786f",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,8 +30,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "f6a79cee4a9a8e581bf47fb8f52a618dbff3e4a6bf622aede845f132f42dd687",
-      "bytes": 11413,
+      "sha256": "2ce4e80b230af095115579df7902fef3774290b40bdd17ed7072b08c7081ab93",
+      "bytes": 12162,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -48,6 +48,11 @@
       "sha256": "aac7d8d8b649e7d23437e31dd1452e217d6bc730cdec346080425135b2991078",
       "bytes": 1171,
       "source_path": "configs/train/action_teacher_5090_gate20.yaml"
+    },
+    "configs/train/action_teacher_5090_repair_r003.yaml": {
+      "sha256": "0297290c01c54bc3dcab9f2d3cda8ffa98f98e003e2c2e058bc08f7d3a0e30b2",
+      "bytes": 1314,
+      "source_path": "configs/train/action_teacher_5090_repair_r003.yaml"
     },
     "configs/train/action_teacher_5090_week.yaml": {
       "sha256": "16f3809726d8671026dd52fce21c437005d92f489d603ea628ce08bbad66964c",
@@ -140,8 +145,8 @@
       "source_path": "scripts/fetch_abot_subset.py"
     },
     "scripts/generate_abot_demo.py": {
-      "sha256": "7f438ef46ce3b66187b012432a2a1bd408f6b39bf27222241dab735b0714b5f1",
-      "bytes": 7438,
+      "sha256": "311b39a2488dd4e988f2d987a0c1569210ebf3b10e41e00b2198907b58070555",
+      "bytes": 7510,
       "source_path": "scripts/generate_abot_demo.py"
     },
     "scripts/package_abot_demo.py": {
@@ -169,9 +174,14 @@
       "bytes": 13312,
       "source_path": "tests/test_action_dataset.py"
     },
+    "tests/test_action_scale_config.py": {
+      "sha256": "983e1a735eeb2acb1a1e406f50c058dfb94dea4865f32d01fc0d248fff54372e",
+      "bytes": 934,
+      "source_path": "tests/test_action_scale_config.py"
+    },
     "tests/test_action_teacher.py": {
-      "sha256": "d5aeda5e48a4d71b1b45e00f455f30a7490e4417a73c1a5e7285bc00570a957c",
-      "bytes": 14223,
+      "sha256": "16d996769499f4a6289fe135f5178f7245345151fa6b7ec86738ede579be92f0",
+      "bytes": 22989,
       "source_path": "tests/test_action_teacher.py"
     },
     "tests/test_cache_abot_long_features.py": {
@@ -215,8 +225,8 @@
       "source_path": "tests/test_input_header.py"
     },
     "tests/test_longforcing_lite.py": {
-      "sha256": "523bca89a3b8e6eeb5c2049dafd3ddfc1d0d133d3a895a5b4fa74763c2351f01",
-      "bytes": 16459,
+      "sha256": "90ab9030ebe93b0a021e629e6a4fa00db7754b994432650accf4f5e67ab9f612",
+      "bytes": 18706,
       "source_path": "tests/test_longforcing_lite.py"
     },
     "tests/test_package_abot_demo.py": {
@@ -240,13 +250,13 @@
       "source_path": "tests/test_wan_causal_priming.py"
     },
     "tests/test_wan_longforcing_adapter.py": {
-      "sha256": "206bb6d3cc98e36d452af9c2d6d065f5afd3ba43ee6685fafe833c6617f8b4ec",
-      "bytes": 9708,
+      "sha256": "e7461573f07265775ef2f8b7ea5625e0ddfccf806ba39d20ed29ae83c5ff370e",
+      "bytes": 11126,
       "source_path": "tests/test_wan_longforcing_adapter.py"
     },
     "train_action_teacher.py": {
-      "sha256": "86bf9109bdc9895176c98e5af59f4d0708d885ff956610459f8681ca66699d2e",
-      "bytes": 27544,
+      "sha256": "55762b8ed39d044d7e3f749609959902ff7aed137d8630aa3280e36820cc6a8f",
+      "bytes": 33066,
       "source_path": "train_action_teacher.py"
     },
     "train_causal_teacher_forcing.py": {
@@ -255,18 +265,18 @@
       "source_path": "train_causal_teacher_forcing.py"
     },
     "train_longforcing_lite.py": {
-      "sha256": "b64eabdb87d67131c2e1977702dc6ee4a0387d2b662c2b249c32aa14b8cd0ecf",
-      "bytes": 23618,
+      "sha256": "ede8db8f238af64c69b294fa9fcfe81f3cd304c4df076eda687cfd25e54f37c9",
+      "bytes": 24089,
       "source_path": "train_longforcing_lite.py"
     },
     "training/causal_tf.py": {
-      "sha256": "9eb5727a47fcc80fbf82e269311421ea9c45e3a9b95c94c9c6f60e3a8ed3004b",
-      "bytes": 27469,
+      "sha256": "83d8c50f656dc46b61a4ae168e7689b446ea147146ec5d3ed59217831b0c8d7b",
+      "bytes": 27638,
       "source_path": "training/causal_tf.py"
     },
     "training/config.py": {
-      "sha256": "2bb5ac6a130530bc7a15069e7cacfa5b7f09f352329ff200a0e20061930e15ef",
-      "bytes": 6962,
+      "sha256": "9e5ce05aabcd30b91787356e43ced4941d27370da2c71f52b0e338125a732c12",
+      "bytes": 7127,
       "source_path": "training/config.py"
     },
     "training/data/__init__.py": {
@@ -320,13 +330,13 @@
       "source_path": "training/eval/rollout15s.py"
     },
     "training/eval/wan_causal_adapter.py": {
-      "sha256": "3dbf82605dd23502b961c3ac696d1e08b81b0e8e5b9e6dcfbd1c18989feb76ae",
-      "bytes": 16233,
+      "sha256": "b6d30b40a1c64973143ebd12d2da818f39259833a03477b0282649b672a24dde",
+      "bytes": 16526,
       "source_path": "training/eval/wan_causal_adapter.py"
     },
     "training/eval/wan_longforcing_adapter.py": {
-      "sha256": "b34998046516afceb937f77640ce14f3cd1f5e1ca1a7661fbd6d6b042ab7ade6",
-      "bytes": 4509,
+      "sha256": "dd472085353b073755a5a9443906d26f5e251ac63e3e123fdfb44c31e0d65e82",
+      "bytes": 4953,
       "source_path": "training/eval/wan_longforcing_adapter.py"
     },
     "training/gpu_gate.py": {
@@ -335,8 +345,8 @@
       "source_path": "training/gpu_gate.py"
     },
     "training/longforcing_lite.py": {
-      "sha256": "2136d854e2c7a5413a950a178e744f5bf0eb7a8a1852f0adde4270d8419b314b",
-      "bytes": 38776,
+      "sha256": "d165d68f5b3525e006c3595f3be5e553b8c32183f4bf2c1f77320635fb6eeae6",
+      "bytes": 39047,
       "source_path": "training/longforcing_lite.py"
     },
     "training/models/__init__.py": {
@@ -345,8 +355,8 @@
       "source_path": "training/models/__init__.py"
     },
     "training/models/action_adapter.py": {
-      "sha256": "e8701f3f36497bc851db8b964f711a19481154c1f2163aa34305e00286f4520d",
-      "bytes": 4741,
+      "sha256": "3009c93de09eddbbf0d905f5d8acf07b81430bebb4fe3a4480254c1d4dc21ced",
+      "bytes": 5248,
       "source_path": "training/models/action_adapter.py"
     },
     "training/models/lora.py": {
@@ -485,5 +495,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1031165
+  "source_bytes": 1054507
 }

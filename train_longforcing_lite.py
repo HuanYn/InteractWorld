@@ -35,6 +35,7 @@ from training.longforcing_lite import (
     validate_backend,
 )
 from training.models.lora import load_trainable_state_dict, trainable_state_dict
+from training.models.action_adapter import validate_action_scale
 from training.paths import project_root
 from training.runtime import (
     CheckpointManager,
@@ -109,6 +110,7 @@ def validation_report(config: LongForcingConfig, config_path: str | Path) -> dic
         },
         "student_steps": config.rollout.student_steps,
         "teacher_steps": config.rollout.teacher_steps,
+        "action_scale": config.model.action_scale,
         "teacher_stop_gradient": config.rollout.teacher_stop_gradient,
         "only_last_block_backward": config.rollout.only_last_block_backward,
         "flowmatch_replay_fraction": config.rollout.flowmatch_replay_fraction,
@@ -250,6 +252,12 @@ def _restore_resume(
         raise ValueError("resume teacher lineage changed")
     if checkpoint.get("parent_causal") != causal_lineage:
         raise ValueError("resume causal lineage changed")
+    # Older LongForcing checkpoints omitted the formerly hard-coded scale.
+    saved_scale = validate_action_scale(
+        checkpoint.get("config", {}).get("model", {}).get("action_scale", 1.0)
+    )
+    if saved_scale != validate_action_scale(config.model.action_scale):
+        raise ValueError("resume action_scale changed; use a new calibrated run")
     load_trainable_state_dict(model, checkpoint["trainable_model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     torch.set_rng_state(checkpoint["torch_rng_state"])

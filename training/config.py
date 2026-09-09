@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .models.action_adapter import ACTION_DIM, CANONICAL_ACTION_KEYS, RGB_FRAMES_PER_ACTION_TOKEN
+from .models.action_adapter import ACTION_DIM, CANONICAL_ACTION_KEYS, RGB_FRAMES_PER_ACTION_TOKEN, validate_action_scale
 from .paths import is_pinned_base_model
 
 
@@ -79,6 +79,10 @@ class ActionTeacherConfig:
 
     def validate(self) -> None:
         errors: list[str] = []
+        try:
+            validate_action_scale(self.model.action_scale)
+        except ValueError as exc:
+            errors.append(str(exc))
         if not is_pinned_base_model(self.model.base_model_path):
             errors.append("base_model_path must be an absolute path to the pinned Wan2.2 revision")
         if tuple(self.data.canonical_action_keys) != CANONICAL_ACTION_KEYS:

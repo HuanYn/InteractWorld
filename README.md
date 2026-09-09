@@ -16,6 +16,14 @@ FlexAttention 为已知窗口形状保留有限的编译容量，并禁止静默
 
 不包含权重、数据、生成素材、训练日志、服务器配置或操作方授权记录。
 
+动作残差尺度现在贯通训练、LongForcing replay 与视频推理，并随 checkpoint 保存；
+旧 checkpoint 缺省仍按 1.0 读取，不会被悄悄改成新值。新建 Action 修复实验可用
+`--warm-start-from /path/to/action-checkpoint.pt` 只继承模型权重，重新初始化 optimizer、
+RNG 和 step=0；这不同于严格的同运行 `--resume`，也不同于旧 gate20 的 `--initialize-from`。
+修改尺度或学习率必须使用独立输出目录，不能冒充从父 checkpoint 的步数继续。
+`action_teacher_5090_repair_r003.yaml` 是实验候选，使用非零动作尺度和零 LoRA 学习率，
+**不是画质或控制已通过的推荐预设**；下游贯通的 CPU 测试不等于 GPU/15 秒视觉验收。
+
 ## CPU 快速检查
 
 Python 3.12；FFmpeg/FFprobe 用于媒体契约测试，不需要 GPU 或模型下载。
