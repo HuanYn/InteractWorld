@@ -24,6 +24,7 @@ from train_action_teacher import (
     _iterator_at_micro_batch,
     _load_gate_checkpoint,
     _load_warm_start_checkpoint,
+    _manifest_hashes,
     parse_args,
 )
 from utils.action_alignment import expand_frame_conditioning_to_tokens, reset_missing_action_adapter
@@ -327,6 +328,8 @@ def test_completed_gate20_can_initialize_full_run_without_repeating_steps(tmp_pa
         "max_steps": 20,
         "output_dir": "/path/to/interactworld/runs/abot-week-v1/action-gate20",
     }
+    # Existing gate20 artifacts predate the optional static-prompt field.
+    source_config["data"].pop("prompt_cache_path", None)
     current_hashes = {
         "dataset_manifest": "manifest",
         "feature_index": "index",
@@ -548,3 +551,102 @@ def test_warm_start_launch_rejects_conflicting_modes_before_gpu_gate() -> None:
             confirmed_gpu_uuid="no-gpu", confirmed_at_utc="no-gpu",
             allocation_profile="no-gpu",
         )
+
+
+@pytest.mark.parametrize("path", ["/data/project/static.pt", "Z:/example/static.pt", None])
+def test_static_prompt_config_accepts_absolute_pt_or_legacy_none(path) -> None:
+    config = load_config(CONFIG_PATH)
+    config.data.prompt_cache_path = path
+    config.validate()
+
+
+@pytest.mark.parametrize("path", ["relative.pt", "E:relative.pt", "/data/../static.pt", "/data/static.json", "", True])
+def test_static_prompt_config_rejects_ambiguous_paths(path) -> None:
+    config = load_config(CONFIG_PATH)
+    config.data.prompt_cache_path = path
+    with pytest.raises(ValueError, match="prompt_cache_path"):
+        config.validate()
+
+
+def test_warm_start_legacy_prompt_field_is_optional_and_static_transition_is_explicit(tmp_path: Path) -> None:
+    config, hashes, path, source = _warm_start_fixture(tmp_path)
+    source["config"]["data"].pop("prompt_cache_path")
+    torch.save(source, path)
+    _, unchanged = _load_warm_start_checkpoint(path, config=config, current_manifest_hashes=hashes)
+    assert unchanged["prompt_transition"]["changed"] is False
+    assert "prompt_cache_path" not in unchanged["source_config"]["data"]
+
+    config.data.prompt_cache_path = str(tmp_path / "static.pt")
+    new_hashes = {**hashes, "prompt_cache": "static-cache-sha", "prompt_cache_receipt": "static-receipt-sha"}
+    _, changed = _load_warm_start_checkpoint(path, config=config, current_manifest_hashes=new_hashes)
+    transition = changed["prompt_transition"]
+    assert transition["changed"] is True
+    assert transition["source"]["policy"] == "original_feature_cache_prompt"
+    assert transition["source"]["artifact_hashes"] == {}
+    assert transition["target"]["policy"] == "scene_static_only_v1"
+    assert transition["target"]["prompt_cache_path"] == config.data.prompt_cache_path
+    assert transition["target"]["artifact_hashes"] == {
+        "prompt_cache": "static-cache-sha", "prompt_cache_receipt": "static-receipt-sha",
+    }
+    assert changed["source_manifest_hashes"] == source["manifest_hashes"]
+    assert changed["target_manifest_hashes"] == new_hashes
+    assert changed["optimizer_restored"] is False and changed["start_step"] == 0
+
+    config.data.width = 800
+    with pytest.raises(ValueError, match="data contract differs"):
+        _load_warm_start_checkpoint(path, config=config, current_manifest_hashes=new_hashes)
+
+
+@pytest.mark.parametrize("missing", ["prompt_cache", "prompt_cache_receipt"])
+def test_static_warm_start_requires_both_new_artifact_bindings(tmp_path: Path, missing: str) -> None:
+    config, hashes, path, _ = _warm_start_fixture(tmp_path)
+    config.data.prompt_cache_path = str(tmp_path / "static.pt")
+    hashes.update(prompt_cache="cache", prompt_cache_receipt="receipt")
+    del hashes[missing]
+    with pytest.raises(ValueError, match="missing prompt cache artifact hashes"):
+        _load_warm_start_checkpoint(path, config=config, current_manifest_hashes=hashes)
+
+
+def test_prompt_sidecar_hashes_extend_original_training_binding_and_resume_is_strict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from training.data import action_dataset
+
+    config = load_config(CONFIG_PATH)
+    manifest = tmp_path / "manifests" / "train.jsonl"
+    manifest.parent.mkdir()
+    manifest.write_text('{"episode_id":"fixture","split":"train"}\n')
+    config.data.manifest_path = str(manifest)
+    feature_index = action_dataset.cache_index_path(manifest)
+    feature_index.parent.mkdir()
+    feature_index.write_text("feature-index-fixture\n")
+    feature_receipt = feature_index.with_suffix(feature_index.suffix + ".receipt.json")
+    feature_receipt.write_text("feature-receipt-fixture\n")
+    monkeypatch.setattr(action_dataset, "validate_feature_cache_binding", lambda *args: {})
+    legacy_hashes = _manifest_hashes(config, CONFIG_PATH)
+    assert set(legacy_hashes) == {"dataset_manifest", "feature_index", "feature_receipt", "training_config"}
+
+    prompt_path = tmp_path / "static.pt"
+    prompt_path.write_bytes(b"static-tensor-fixture")
+    prompt_receipt = prompt_path.with_suffix(prompt_path.suffix + ".receipt.json")
+    prompt_receipt.write_text("static-receipt-fixture\n")
+    config.data.prompt_cache_path = str(prompt_path)
+    calls = []
+
+    def verified_binding(path, *, index_path, manifest_path):
+        calls.append((Path(path), Path(index_path), Path(manifest_path)))
+        return {"cache_sha256": sha256_file(path)}
+
+    monkeypatch.setattr(action_dataset, "validate_scene_static_prompt_cache_binding", verified_binding)
+    hashes = _manifest_hashes(config, CONFIG_PATH)
+    assert calls == [(prompt_path, feature_index, manifest)]
+    assert {key: hashes[key] for key in legacy_hashes} == legacy_hashes
+    assert hashes["prompt_cache"] == sha256_file(prompt_path)
+    assert hashes["prompt_cache_receipt"] == sha256_file(prompt_receipt)
+    checkpoint = tmp_path / "resume.pt"
+    torch.save({"manifest_hashes": hashes, "step": 20}, checkpoint)
+    assert load_checkpoint(checkpoint, expected_manifest_hashes=hashes)["step"] == 20
+    prompt_receipt.write_text("changed-static-receipt-fixture\n")
+    changed_hashes = _manifest_hashes(config, CONFIG_PATH)
+    with pytest.raises(ValueError, match="manifest hashes"):
+        load_checkpoint(checkpoint, expected_manifest_hashes=changed_hashes)

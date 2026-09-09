@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import importlib.util
+import hashlib
 import json
 import shutil
 import subprocess
@@ -17,6 +18,8 @@ from training.data.action_dataset import (
     PrecomputedActionDataset,
     build_action_teacher_dataloader,
     cache_index_path,
+    load_scene_static_prompt_cache,
+    validate_scene_static_prompt_cache_binding,
 )
 from training.data.action_schema import ACTION_KEYS, parse_action_document
 
@@ -349,3 +352,136 @@ def test_cache_corrected_seek_short_window_and_verified_resume(tmp_path: Path, m
     with pytest.raises(RuntimeError, match="video decode failed") as error:
         decode_video_window(video, start_seconds=0, height=2, width=2)
     assert not isinstance(error.value, _SCRIPT.IncompleteVideoWindowError)
+
+
+def _static_prompt_fixture(tmp_path):
+    root = tmp_path / "features"
+    root.mkdir()
+    manifest = tmp_path / "manifests" / "manifest.jsonl"
+    manifest.parent.mkdir()
+    records = [{"episode_id": "train-a", "split": "train"},
+               {"episode_id": "train-b", "split": "train"},
+               {"episode_id": "dev-c", "split": "dev"}]
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+    shard = root / "unchanged.pt"
+    torch.save({"schema_version": 1, "clean_latents": torch.zeros(1, 13, 48, 30, 52, dtype=torch.bfloat16),
+                "actions": torch.zeros(1, 48, 8), "prompt_embeds": torch.ones(3, 8)}, shard)
+    index = root / "manifest.features.jsonl"
+    index_rows = []
+    for row in records:
+        episode_receipt = root / (row["episode_id"] + ".json")
+        episode_receipt.write_text(json.dumps(row), encoding="utf-8")
+        index_rows.append({**row, "num_windows": 1,
+                           "shards": [{"path": shard.name, "sha256": _SCRIPT.sha256_file(shard), "samples": 1}],
+                           "episode_receipt": {"path": episode_receipt.name, "sha256": _SCRIPT.sha256_file(episode_receipt)}})
+    index.write_text("".join(json.dumps(row) + "\n" for row in index_rows), encoding="utf-8")
+    feature_receipt = index.with_suffix(index.suffix + ".receipt.json")
+    feature_receipt.write_text(json.dumps({"schema_version": 1, "index": str(index), "manifest": str(manifest),
+                                          "index_sha256": _SCRIPT.sha256_file(index), "manifest_sha256": _SCRIPT.sha256_file(manifest)}), encoding="utf-8")
+    path = root / "static-prompts.pt"
+    payload = {"schema_version": 1, "kind": "scene_static_prompt_cache", "prompt_embeds": {
+        row["episode_id"]: torch.full((4, 4096), position + 2, dtype=torch.bfloat16)
+        for position, row in enumerate(records)}}
+    receipt = {"schema_version": 1, "kind": "scene_static_prompt_cache", "prompt_policy": "scene_static_only_v1",
+               "cache_path": str(path), "manifest_sha256": _SCRIPT.sha256_file(manifest),
+               "feature_index_sha256": _SCRIPT.sha256_file(index), "feature_receipt_sha256": _SCRIPT.sha256_file(feature_receipt),
+               "encoder": {"kind": "unit-test-only"}, "episodes": {}}
+    for row in records:
+        prompt = "A static outdoor scene. " + row["episode_id"]
+        receipt["episodes"][row["episode_id"]] = {"split": row["split"], "prompt": prompt,
+                                                    "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
+    _write_static_prompt_fixture(path, payload, receipt)
+    return path, index, manifest, shard, payload, receipt
+
+
+def _write_static_prompt_fixture(path, payload, receipt):
+    torch.save(payload, path)
+    receipt["cache_sha256"] = _SCRIPT.sha256_file(path)
+    path.with_suffix(path.suffix + ".receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+
+def test_static_prompt_override_changes_only_prompt_and_never_mutates_cache(tmp_path, monkeypatch):
+    path, index, manifest, shard, _, receipt = _static_prompt_fixture(tmp_path)
+    original_shard_sha = _SCRIPT.sha256_file(shard)
+    original_prompt_sha = _SCRIPT.sha256_file(path)
+    baseline = PrecomputedActionDataset(index, manifest_path=manifest)
+    override = PrecomputedActionDataset(index, manifest_path=manifest, prompt_cache_path=path)
+    assert override.prompt_cache_receipt == receipt
+    for sample in range(len(baseline)):
+        old, new = baseline[sample], override[sample]
+        for key in ("noisy_latents", "target_flow", "timesteps", "actions"):
+            assert torch.equal(old[key], new[key])
+        assert old["prompt_embeds"].shape == (3, 8)
+        assert new["prompt_embeds"].shape == (4, 4096)
+        assert torch.all(new["prompt_embeds"] == sample + 2)
+        new["prompt_embeds"].fill_(99)
+        assert torch.all(override[sample]["prompt_embeds"] == sample + 2)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    loader = build_action_teacher_dataloader(
+        config=SimpleNamespace(manifest_path=str(manifest), precomputed_latents=True,
+                               precomputed_text_embeddings=True, num_workers=0, prompt_cache_path=str(path)),
+        training=SimpleNamespace(seed=42, micro_batch_size=1))
+    assert torch.all(next(iter(loader))["prompt_embeds"] == 2)
+    assert _SCRIPT.sha256_file(shard) == original_shard_sha
+    assert _SCRIPT.sha256_file(path) == original_prompt_sha
+
+
+def test_static_prompt_binding_helper_does_not_load_tensors_or_query_cuda(tmp_path, monkeypatch):
+    path, index, manifest, _, _, expected = _static_prompt_fixture(tmp_path)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("binding verification must not load tensors or query CUDA")
+    monkeypatch.setattr(torch, "load", forbidden)
+    monkeypatch.setattr(torch.cuda, "is_available", forbidden)
+    assert validate_scene_static_prompt_cache_binding(path, index_path=index, manifest_path=manifest) == expected
+
+
+@pytest.mark.parametrize("field", ["manifest_sha256", "feature_index_sha256", "feature_receipt_sha256",
+                                  "cache_sha256", "cache_path", "prompt_policy"])
+def test_static_prompt_rejects_stale_provenance_even_when_shard_checks_disabled(tmp_path, field):
+    path, index, manifest, _, _, receipt = _static_prompt_fixture(tmp_path)
+    receipt[field] = "wrong"
+    path.with_suffix(path.suffix + ".receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(FeatureCacheError, match="scene-static prompt"):
+        PrecomputedActionDataset(index, manifest_path=manifest, prompt_cache_path=path, verify_hashes=False)
+
+
+def test_static_prompt_requires_selected_split_coverage_without_fallback(tmp_path):
+    path, index, manifest, _, payload, receipt = _static_prompt_fixture(tmp_path)
+    payload["prompt_embeds"].pop("train-b")
+    receipt["episodes"].pop("train-b")
+    _write_static_prompt_fixture(path, payload, receipt)
+    with pytest.raises(FeatureCacheError, match="missing required episodes.*train-b"):
+        PrecomputedActionDataset(index, manifest_path=manifest, prompt_cache_path=path)
+    embeddings, _ = load_scene_static_prompt_cache(path, index_path=index, manifest_path=manifest,
+                                                   required_episodes=["dev-c"])
+    assert set(embeddings) == {"train-a", "dev-c"}
+    assert PrecomputedActionDataset(index, manifest_path=manifest, split="dev", prompt_cache_path=path)[0]["prompt_embeds"].shape == (4, 4096)
+    with pytest.raises(FeatureCacheError, match="missing required episodes"):
+        load_scene_static_prompt_cache(path, index_path=index, manifest_path=manifest)
+
+
+@pytest.mark.parametrize("damage", ["unknown_id", "split", "text_hash", "payload_ids"])
+def test_static_prompt_rejects_episode_or_text_misbinding(tmp_path, damage):
+    path, index, manifest, _, payload, receipt = _static_prompt_fixture(tmp_path)
+    if damage == "unknown_id":
+        receipt["episodes"]["not-in-source"] = dict(receipt["episodes"]["train-a"])
+        payload["prompt_embeds"]["not-in-source"] = payload["prompt_embeds"]["train-a"]
+    elif damage == "split":
+        receipt["episodes"]["train-a"]["split"] = "dev"
+    elif damage == "text_hash":
+        receipt["episodes"]["train-a"]["prompt"] = "a different static scene"
+    else:
+        payload["prompt_embeds"].pop("train-a")
+    _write_static_prompt_fixture(path, payload, receipt)
+    with pytest.raises(FeatureCacheError, match="scene-static prompt"):
+        load_scene_static_prompt_cache(path, index_path=index, manifest_path=manifest)
+
+
+@pytest.mark.parametrize("tensor", [torch.zeros(4, 8), torch.zeros(0, 4096), torch.zeros(513, 4096),
+                                   torch.zeros(4, 4096, dtype=torch.int64), torch.full((4, 4096), float("nan"))])
+def test_static_prompt_rejects_invalid_embeddings(tmp_path, tensor):
+    path, index, manifest, _, payload, receipt = _static_prompt_fixture(tmp_path)
+    payload["prompt_embeds"]["train-a"] = tensor
+    _write_static_prompt_fixture(path, payload, receipt)
+    with pytest.raises(FeatureCacheError, match="scene-static prompt embedding"):
+        load_scene_static_prompt_cache(path, index_path=index, manifest_path=manifest)

@@ -24,6 +24,13 @@ RNG 和 step=0；这不同于严格的同运行 `--resume`，也不同于旧 gat
 `action_teacher_5090_repair_r003.yaml` 是实验候选，使用非零动作尺度和零 LoRA 学习率，
 **不是画质或控制已通过的推荐预设**；下游贯通的 CPU 测试不等于 GPU/15 秒视觉验收。
 
+`cache_scene_static_prompts.py` 可只编码原始 `scene_static` 字段，新增独立文本缓存，
+不重写视频/动作缓存，也不在缺失时退回带动作叙述的 narrative。
+Action 的可选 `data.prompt_cache_path` 使用该缓存及其哈希收据；只有 weights-only
+warm start 允许显式改变文本缓存，严格 resume 仍检查完整配置和内容哈希。
+`action_teacher_5090_repair_r004.yaml` 用于检验动态叙述是否削弱按键条件：
+它保持 R003 的尺度与学习率，仅替换文本条件，属于未完成画质/控制验证的实验配置。
+
 ## CPU 快速检查
 
 Python 3.12；FFmpeg/FFprobe 用于媒体契约测试，不需要 GPU 或模型下载。
@@ -164,6 +171,24 @@ run_gpu train_longforcing_lite.py --config "$INTERACTWORLD_ROOT/configs/longforc
 每 20 步保存可恢复状态，保留 best + last 2；best 按训练 loss 选，不是视觉最优。
 中断后使用同一配置和该阶段自己的 `--resume /path/to/checkpoint.pt`，不要重新初始化覆盖已有实验。
 大任务建议在 `screen`/`tmux` 内串行运行，并自行设定时限；此公开仓库不包含私人自动调度器。
+
+可选静态文本修复：先复用已完成的 49 帧缓存，只新增文本特征。默认不带
+`--launch` 的同一命令只核对输入并输出 CPU 计划；下面的 `run_gpu` 会实际编码：
+
+```bash
+run_gpu scripts/cache_scene_static_prompts.py --project-root "$INTERACTWORLD_ROOT" \
+  --manifest "$INTERACTWORLD_ROOT/data/manifests/train.jsonl" \
+  --feature-index "$INTERACTWORLD_ROOT/data/features/train.features.jsonl" \
+  --base-model "$BASE" \
+  --output "$INTERACTWORLD_ROOT/data/features/scene-static-prompts-r004.pt"
+```
+
+在独立的新 Action 配置中将 `data.prompt_cache_path` 设为该 `.pt` 绝对路径，
+用 `--warm-start-from` 指向自己的已完成 Action checkpoint；按实际机器改写
+R004 模板里的数据、模型和输出路径。不要对旧运行直接改配置后 `--resume`。
+该模板保持非零动作尺度 0.03、Adapter 学习率 2e-5、LoRA 学习率 0，运行 780 新步。
+评估时也必须加载同一静态文本缓存并显示真正使用的文字；旧 Demo 素材准备流程
+默认仍用原叙述，不会因为训练配置新增文本缓存就自动替换它。
 
 ### 4. 真实输入与 15 秒输出
 

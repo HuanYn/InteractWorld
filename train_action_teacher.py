@@ -55,6 +55,29 @@ from training.runtime import (
 DEFAULT_CONFIG = Path(__file__).parent / "configs" / "train" / "action_teacher_lora_v1.yaml"
 GATE_COMPLETION_STEP = 20
 SHARED_DATA_HASH_KEYS = ("dataset_manifest", "feature_index", "feature_receipt")
+PROMPT_CACHE_HASH_KEYS = ("prompt_cache", "prompt_cache_receipt")
+
+
+def _canonical_data_contract(value: Any) -> dict[str, Any]:
+    """The absent legacy optional prompt path means the original feature text."""
+    if not isinstance(value, Mapping):
+        raise ValueError("checkpoint has no serialized data configuration")
+    result = dict(value)
+    result.setdefault("prompt_cache_path", None)
+    return result
+
+
+def _prompt_contract(data: Mapping[str, Any], hashes: Mapping[str, str]) -> dict[str, Any]:
+    path = data.get("prompt_cache_path")
+    if path is not None and any(not hashes.get(key) for key in PROMPT_CACHE_HASH_KEYS):
+        raise ValueError("static prompt contract is missing prompt cache artifact hashes")
+    if path is None and any(key in hashes for key in PROMPT_CACHE_HASH_KEYS):
+        raise ValueError("legacy prompt contract unexpectedly contains prompt cache hashes")
+    return {
+        "policy": "scene_static_only_v1" if path is not None else "original_feature_cache_prompt",
+        "prompt_cache_path": path,
+        "artifact_hashes": {key: hashes[key] for key in PROMPT_CACHE_HASH_KEYS if key in hashes},
+    }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -192,6 +215,18 @@ def _manifest_hashes(config: ActionTeacherConfig, config_path: str | Path) -> di
         raise ValueError(
             f"dataset manifest hash mismatch: expected {expected}, got {hashes['dataset_manifest']}"
         )
+    if config.data.prompt_cache_path is not None:
+        from training.data.action_dataset import validate_scene_static_prompt_cache_binding
+
+        prompt_path = Path(config.data.prompt_cache_path)
+        prompt_receipt_path = prompt_path.with_suffix(prompt_path.suffix + ".receipt.json")
+        prompt_receipt = validate_scene_static_prompt_cache_binding(
+            prompt_path, index_path=feature_index, manifest_path=config.data.manifest_path,
+        )
+        # The binding validator hashes the full tensor sidecar; do not read its
+        # several gigabytes a second time solely for the training hash ledger.
+        hashes["prompt_cache"] = prompt_receipt["cache_sha256"]
+        hashes["prompt_cache_receipt"] = sha256_file(prompt_receipt_path)
     return hashes
 
 
@@ -418,7 +453,7 @@ def _load_gate_checkpoint(
     source_hashes = payload.get("manifest_hashes")
     if not isinstance(source_hashes, Mapping):
         raise ValueError("gate checkpoint has no manifest hashes")
-    for key in SHARED_DATA_HASH_KEYS:
+    for key in (*SHARED_DATA_HASH_KEYS, *PROMPT_CACHE_HASH_KEYS):
         if source_hashes.get(key) != current_manifest_hashes.get(key):
             raise ValueError(
                 f"gate checkpoint {key} mismatch: "
@@ -430,8 +465,15 @@ def _load_gate_checkpoint(
         raise ValueError("gate checkpoint has no serialized configuration")
     current_config = config.to_dict()
     for section in ("model", "data", "optimizer"):
-        if source_config.get(section) != current_config[section]:
+        source_section = source_config.get(section)
+        current_section = current_config[section]
+        if section == "data":
+            source_section = _canonical_data_contract(source_section)
+            current_section = _canonical_data_contract(current_section)
+        if source_section != current_section:
             raise ValueError(f"gate checkpoint {section} contract differs from the full run")
+    _prompt_contract(_canonical_data_contract(source_config.get("data")), source_hashes)
+    _prompt_contract(current_config["data"], current_manifest_hashes)
     source_training = source_config.get("training")
     if not isinstance(source_training, Mapping):
         raise ValueError("gate checkpoint has no serialized training configuration")
@@ -471,8 +513,10 @@ def _load_warm_start_checkpoint(
     """Load only compatible Action weights, never resumable training state.
 
     The same base, LoRA, tensor layout, conditioning, and data contracts are
-    required. Action scale and activation checkpointing may change, as may
-    the optimizer and fresh-run training settings. Exact tensor names/shapes
+    required. Action scale, activation checkpointing, and the optional static
+    prompt sidecar may change, as may the optimizer and fresh-run training
+    settings. Prompt transitions are recorded, never treated as resumes.
+    Exact tensor names/shapes
     are additionally checked by ``load_trainable_state_dict`` on the model.
     """
     source = Path(path).resolve()
@@ -508,8 +552,16 @@ def _load_warm_start_checkpoint(
         current_model_contract.pop(field, None)
     if source_model_contract != current_model_contract:
         raise ValueError("warm-start checkpoint model architecture/conditioning contract differs")
-    if source_config.get("data") != current_config["data"]:
+    source_data = _canonical_data_contract(source_config.get("data"))
+    current_data = _canonical_data_contract(current_config["data"])
+    source_data_contract = dict(source_data)
+    current_data_contract = dict(current_data)
+    source_data_contract.pop("prompt_cache_path")
+    current_data_contract.pop("prompt_cache_path")
+    if source_data_contract != current_data_contract:
         raise ValueError("warm-start checkpoint data contract differs")
+    source_prompt = _prompt_contract(source_data, source_hashes)
+    current_prompt = _prompt_contract(current_data, current_manifest_hashes)
     state = payload.get("trainable_model")
     if not isinstance(state, Mapping) or not state:
         raise ValueError("warm-start checkpoint has no trainable model state")
@@ -523,6 +575,13 @@ def _load_warm_start_checkpoint(
         "source_step": step,
         "source_config": dict(source_config),
         "source_manifest_hashes": dict(source_hashes),
+        "target_manifest_hashes": dict(current_manifest_hashes),
+        "prompt_transition": {
+            "changed": source_prompt != current_prompt,
+            "source": source_prompt,
+            "target": current_prompt,
+            "mode": "weights_only_new_training_contract",
+        },
         "source_initialization": payload.get("initialization"),
         "optimizer_restored": False,
         "rng_restored": False,

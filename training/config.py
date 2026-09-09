@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .models.action_adapter import ACTION_DIM, CANONICAL_ACTION_KEYS, RGB_FRAMES_PER_ACTION_TOKEN, validate_action_scale
@@ -35,6 +35,7 @@ class ModelConfig:
 class DataConfig:
     manifest_path: str = "/path/to/interactworld/data/manifests/train.jsonl"
     manifest_sha256: str | None = None
+    prompt_cache_path: str | None = None
     data_factory: str = "training.data.action_dataset:build_action_teacher_dataloader"
     precomputed_latents: bool = True
     precomputed_text_embeddings: bool = True
@@ -85,6 +86,15 @@ class ActionTeacherConfig:
             errors.append(str(exc))
         if not is_pinned_base_model(self.model.base_model_path):
             errors.append("base_model_path must be an absolute path to the pinned Wan2.2 revision")
+        if self.data.prompt_cache_path is not None:
+            raw = self.data.prompt_cache_path
+            if not isinstance(raw, str):
+                errors.append("prompt_cache_path must be null or an absolute .pt path")
+            else:
+                windows = PureWindowsPath(raw)
+                prompt_path = windows if windows.drive else PurePosixPath(raw)
+                if not prompt_path.is_absolute() or ".." in prompt_path.parts or prompt_path.suffix != ".pt":
+                    errors.append("prompt_cache_path must be null or an absolute .pt path without traversal")
         if tuple(self.data.canonical_action_keys) != CANONICAL_ACTION_KEYS:
             errors.append(f"canonical_action_keys must be exactly {CANONICAL_ACTION_KEYS}")
         if self.data.rgb_frames_per_action_token != RGB_FRAMES_PER_ACTION_TOKEN:

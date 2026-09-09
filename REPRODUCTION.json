@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "e36d91f4f06645413e0a7b080678caf51470786f",
+  "source_revision": "f7f5828478b4c2e58c9662dc17a8b1e670ac44ce",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,8 +30,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "2ce4e80b230af095115579df7902fef3774290b40bdd17ed7072b08c7081ab93",
-      "bytes": 12162,
+      "sha256": "26efb64ce544489021e9d0c9e1c0f5759392beb4e6a9959d1bed3b9fd74f7793",
+      "bytes": 13890,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -53,6 +53,11 @@
       "sha256": "0297290c01c54bc3dcab9f2d3cda8ffa98f98e003e2c2e058bc08f7d3a0e30b2",
       "bytes": 1314,
       "source_path": "configs/train/action_teacher_5090_repair_r003.yaml"
+    },
+    "configs/train/action_teacher_5090_repair_r004.yaml": {
+      "sha256": "6aaa48263367342aadc612aa1fb6ded36a5ddab43d7fced03233c623d35c941a",
+      "bytes": 1412,
+      "source_path": "configs/train/action_teacher_5090_repair_r004.yaml"
     },
     "configs/train/action_teacher_5090_week.yaml": {
       "sha256": "16f3809726d8671026dd52fce21c437005d92f489d603ea628ce08bbad66964c",
@@ -124,6 +129,11 @@
       "bytes": 18858,
       "source_path": "scripts/cache_abot_long_features.py"
     },
+    "scripts/cache_scene_static_prompts.py": {
+      "sha256": "ae8d0e8124751ddba30a5395a1eefd53c4aa120059ca4d292689d2e7ce985351",
+      "bytes": 8323,
+      "source_path": "scripts/cache_scene_static_prompts.py"
+    },
     "scripts/check_wan_checkpoint_api.py": {
       "sha256": "2f7fff30ebd62c02c8b022ca84b579cb8fd66ec913dcf377f96d59e86a86618c",
       "bytes": 1564,
@@ -170,8 +180,8 @@
       "source_path": "tests/test_abot_remote.py"
     },
     "tests/test_action_dataset.py": {
-      "sha256": "312497ec28422f90903c8ab087d1640f4644c4c661a18a3ae2f18d8c442833d9",
-      "bytes": 13312,
+      "sha256": "107f5f50e260e9837dc0387475507719aaa338e75f9d19c5c47eb9a94846c5d2",
+      "bytes": 21714,
       "source_path": "tests/test_action_dataset.py"
     },
     "tests/test_action_scale_config.py": {
@@ -180,8 +190,8 @@
       "source_path": "tests/test_action_scale_config.py"
     },
     "tests/test_action_teacher.py": {
-      "sha256": "16d996769499f4a6289fe135f5178f7245345151fa6b7ec86738ede579be92f0",
-      "bytes": 22989,
+      "sha256": "e1916619bd75d7554d4d4c95dce26b13154f30c56ebc3ffef3e412f844e68d4d",
+      "bytes": 28418,
       "source_path": "tests/test_action_teacher.py"
     },
     "tests/test_cache_abot_long_features.py": {
@@ -244,6 +254,11 @@
       "bytes": 4325,
       "source_path": "tests/test_rollout15s.py"
     },
+    "tests/test_scene_static_prompts.py": {
+      "sha256": "b19a1c28f82856a828e37efcc2cc3c9ecee6b09cd77e6b26ff73dedb930fcf96",
+      "bytes": 1037,
+      "source_path": "tests/test_scene_static_prompts.py"
+    },
     "tests/test_wan_causal_priming.py": {
       "sha256": "dd8449987e020c9988b231444fb10079f54d21393c131db5e9c30b89b962345d",
       "bytes": 2805,
@@ -255,8 +270,8 @@
       "source_path": "tests/test_wan_longforcing_adapter.py"
     },
     "train_action_teacher.py": {
-      "sha256": "55762b8ed39d044d7e3f749609959902ff7aed137d8630aa3280e36820cc6a8f",
-      "bytes": 33066,
+      "sha256": "35265faf4d93609e607349f9d662c731a62dbcf19b865c7ba6425a4f0d214742",
+      "bytes": 36288,
       "source_path": "train_action_teacher.py"
     },
     "train_causal_teacher_forcing.py": {
@@ -275,8 +290,8 @@
       "source_path": "training/causal_tf.py"
     },
     "training/config.py": {
-      "sha256": "9e5ce05aabcd30b91787356e43ced4941d27370da2c71f52b0e338125a732c12",
-      "bytes": 7127,
+      "sha256": "07b06654e07b011edf3def1d80150836f5043a29fb800696ba483cb6dea00b39",
+      "bytes": 7791,
       "source_path": "training/config.py"
     },
     "training/data/__init__.py": {
@@ -295,8 +310,8 @@
       "source_path": "training/data/abot_remote.py"
     },
     "training/data/action_dataset.py": {
-      "sha256": "4976303143771deabbe1ac08d3874d603317c5744ccaf7d770b4781cfd6f72d7",
-      "bytes": 11921,
+      "sha256": "ecac5578741efb864669f84f0f6ba64c143c6585c11b9ebff221624920fa29cf",
+      "bytes": 19328,
       "source_path": "training/data/action_dataset.py"
     },
     "training/data/action_schema.py": {
@@ -495,5 +510,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1054507
+  "source_bytes": 1092131
 }
