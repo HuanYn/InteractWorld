@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 from training.data.action_dataset import (
     CACHE_SCHEMA_VERSION,
     FeatureCacheError,
+    load_scene_static_prompt_cache,
     sha256_file,
     validate_feature_cache_binding,
 )
@@ -84,6 +85,7 @@ class PrecomputedLongForcingDataset(Dataset[dict[str, Any]]):
         split: str = "train",
         seed: int = 42,
         verify_hashes: bool = True,
+        prompt_cache_path: str | Path | None = None,
     ) -> None:
         self.index_path = Path(index_path).resolve()
         self.seed = int(seed)
@@ -127,6 +129,22 @@ class PrecomputedLongForcingDataset(Dataset[dict[str, Any]]):
         self.episodes = episodes
         self.samples_per_episode = max(int(record["num_windows"]) for record in episodes)
         self.verify_hashes = bool(verify_hashes)
+        self.prompt_cache_path = Path(prompt_cache_path).resolve() if prompt_cache_path is not None else None
+        self.prompt_cache_receipt: dict[str, Any] | None = None
+        self._prompt_overrides: dict[str, torch.Tensor] | None = None
+        if self.prompt_cache_path is not None:
+            # The static sidecar belongs to the stage-1/2 SHORT feature index,
+            # not the separately generated long241 index. Never silently fall
+            # back to a narrative shard prompt for a missing rollout episode.
+            self._prompt_overrides, self.prompt_cache_receipt = load_scene_static_prompt_cache(
+                self.prompt_cache_path,
+                index_path=short_index_path,
+                manifest_path=manifest_path,
+                required_episodes=[episode["episode_id"] for episode in episodes],
+            )
+            if any(self.prompt_cache_receipt["episodes"][episode["episode_id"]]["split"] != split
+                   for episode in episodes):
+                raise FeatureCacheError("long241/static prompt split mismatch")
 
     def __len__(self) -> int:
         return len(self.episodes) * self.samples_per_episode
@@ -171,7 +189,10 @@ class PrecomputedLongForcingDataset(Dataset[dict[str, Any]]):
                 result = {
                     "clean_latents": clean,
                     "actions": actions,
-                    "prompt_embeds": payload["prompt_embeds"].float(),
+                    "prompt_embeds": (
+                        self._prompt_overrides[episode["episode_id"]]
+                        if self._prompt_overrides is not None else payload["prompt_embeds"]
+                    ).float(),
                 }
                 for key in ("y", "clip_fea"):
                     if key in payload:
@@ -250,6 +271,7 @@ def build_longforcing_dataloader(*, config: Any, training: Any) -> DataLoader:
         short_index_path=config.feature_index_path,
         split="train",
         seed=training.seed,
+        prompt_cache_path=getattr(config, "prompt_cache_path", None),
     )
     return DataLoader(
         dataset,

@@ -57,6 +57,7 @@ LONGFORCING_LINEAGE_KEYS = (
     "long_feature_index",
     "long_feature_receipt",
 )
+PROMPT_LINEAGE_KEYS = ("prompt_cache", "prompt_cache_receipt")
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class SceneSpec:
     reference_frames_path: str
     seed: int
     action_segments: tuple[ActionSegment, ...]
+    source_episode_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -138,9 +140,12 @@ class Rollout15sConfig:
         )
         lineage_names = set(self.lineage.artifact_paths)
         if not set(required_lineage).issubset(lineage_names) or not lineage_names.issubset(
-            LONGFORCING_LINEAGE_KEYS
+            (*LONGFORCING_LINEAGE_KEYS, *PROMPT_LINEAGE_KEYS)
         ):
             errors.append(f"artifact_paths must contain {required_lineage} and no unknown keys")
+        prompt_keys = lineage_names.intersection(PROMPT_LINEAGE_KEYS)
+        if prompt_keys and prompt_keys != set(PROMPT_LINEAGE_KEYS):
+            errors.append("static prompt lineage requires both cache and receipt")
         indices = [anchor.frame_index for anchor in self.late_anchors]
         if indices != sorted(indices) or not indices or indices[0] < 120 or indices[-1] != 240:
             errors.append("late anchors must be sorted, start at frame >=120, and include frame 240")
@@ -150,6 +155,8 @@ class Rollout15sConfig:
             errors.append("late-anchor weights must be positive")
         opposing = ({"W", "S"}, {"A", "D"}, {"I", "K"}, {"J", "L"})
         for scene in self.scenes:
+            if prompt_keys and not scene.source_episode_id:
+                errors.append(f"static-prompt scene {scene.scene_id!r} needs source_episode_id")
             if not scene.scene_id or not scene.prompt or scene.seed < 0:
                 errors.append(f"scene {scene.scene_id!r} has incomplete fixed metadata")
             if sum(segment.frames for segment in scene.action_segments) != FUTURE_RGB_FRAMES:
@@ -258,6 +265,7 @@ def load_rollout_config(path: str | Path) -> Rollout15sConfig:
                 reference_frames_path=str(item["reference_frames_path"]),
                 seed=int(item["seed"]),
                 action_segments=_segments(item.get("action_segments", [])),
+                source_episode_id=item.get("source_episode_id"),
             )
             for item in raw.get("scenes", [])
         ),
@@ -421,12 +429,14 @@ def verify_checkpoint_lineage(config: Rollout15sConfig) -> dict[str, Any]:
     if not isinstance(payload.get("trainable_model"), Mapping) or not payload["trainable_model"]:
         raise ValueError("checkpoint has no named trainable model state")
     hashes = payload.get("manifest_hashes")
-    expected_keys = (
+    expected_keys = set(
         LONGFORCING_LINEAGE_KEYS
         if spec.expected_stage == LONGFORCING_STAGE
         else CAUSAL_LINEAGE_KEYS
     )
-    if not isinstance(hashes, dict) or set(hashes) != set(expected_keys):
+    if "prompt_cache" in spec.artifact_paths:
+        expected_keys.update(PROMPT_LINEAGE_KEYS)
+    if not isinstance(hashes, dict) or set(hashes) != expected_keys:
         raise ValueError("checkpoint has an unexpected artifact-lineage schema")
     if hashes != {key: actual_artifacts[key] for key in expected_keys}:
         raise ValueError("checkpoint artifact lineage does not match the exact current files")
@@ -436,9 +446,28 @@ def verify_checkpoint_lineage(config: Rollout15sConfig) -> dict[str, Any]:
     if parent.get("sha256") != hashes.get("teacher_checkpoint"):
         raise ValueError("parent teacher SHA-256 disagrees with causal checkpoint lineage")
     parent_sources = parent.get("source_manifest_hashes")
-    for key in ("dataset_manifest", "feature_index", "feature_receipt"):
+    inherited_keys = ("dataset_manifest", "feature_index", "feature_receipt", *(
+        PROMPT_LINEAGE_KEYS if "prompt_cache" in expected_keys else ()
+    ))
+    for key in inherited_keys:
         if not isinstance(parent_sources, dict) or parent_sources.get(key) != hashes.get(key):
             raise ValueError(f"parent teacher {key} lineage mismatch")
+    from training.causal_tf import _prompt_contract
+    saved_data = payload.get("config", {}).get("data", {})
+    prompt_contract = _prompt_contract(saved_data, hashes)
+    prompt_path = spec.artifact_paths.get("prompt_cache")
+    if prompt_contract["prompt_cache_path"] != prompt_path:
+        raise ValueError("evaluation prompt cache path differs from saved training configuration")
+    if prompt_path is not None:
+        from training.data.action_dataset import validate_scene_static_prompt_cache_binding
+        if Path(spec.artifact_paths["prompt_cache_receipt"]).resolve() != Path(prompt_path).with_suffix(".pt.receipt.json").resolve():
+            raise ValueError("evaluation prompt receipt is not the bound cache sidecar")
+        receipt = validate_scene_static_prompt_cache_binding(prompt_path,
+            index_path=spec.artifact_paths["feature_index"], manifest_path=spec.artifact_paths["dataset_manifest"])
+        for scene in config.scenes:
+            binding = receipt["episodes"].get(scene.source_episode_id)
+            if not binding or binding["split"] != "dev" or scene.prompt != binding["prompt"]:
+                raise ValueError(f"evaluation prompt does not match held-out training-cache binding: {scene.scene_id}")
     model = payload.get("config", {}).get("model", {})
     if model.get("base_model_path") != spec.expected_base_model_path:
         raise ValueError("checkpoint base-model revision differs from the pinned evaluation base")
@@ -458,7 +487,7 @@ def verify_checkpoint_lineage(config: Rollout15sConfig) -> dict[str, Any]:
         if causal_parent.get("sha256") != hashes.get("causal_checkpoint"):
             raise ValueError("LongForcing causal-parent SHA-256 mismatch")
         causal_sources = causal_parent.get("source_manifest_hashes")
-        for key in ("dataset_manifest", "feature_index", "feature_receipt"):
+        for key in inherited_keys:
             if not isinstance(causal_sources, dict) or causal_sources.get(key) != hashes.get(key):
                 raise ValueError(f"LongForcing causal parent {key} lineage mismatch")
         try:
@@ -470,6 +499,11 @@ def verify_checkpoint_lineage(config: Rollout15sConfig) -> dict[str, Any]:
         except TypeError:  # pragma: no cover
             causal_payload = torch.load(spec.artifact_paths["causal_checkpoint"], map_location="cpu")
         causal_model = causal_payload.get("config", {}).get("model", {})
+        from training.models.action_adapter import validate_action_scale
+        if validate_action_scale(causal_model.get("action_scale", 1.0)) != validate_action_scale(model.get("action_scale", 1.0)):
+            raise ValueError("LongForcing inference and causal parent action_scale disagree")
+        if _prompt_contract(causal_payload.get("config", {}).get("data", {}), causal_payload.get("manifest_hashes", {})) != prompt_contract:
+            raise ValueError("LongForcing inference and causal parent prompt contract disagree")
         if (
             causal_payload.get("stage") != CAUSAL_STAGE
             or causal_payload.get("parent_teacher") != parent
@@ -486,6 +520,7 @@ def verify_checkpoint_lineage(config: Rollout15sConfig) -> dict[str, Any]:
         "manifest_hashes": dict(hashes),
         "parent_teacher": dict(parent),
         "parent_causal": payload.get("parent_causal"),
+        "prompt_contract": prompt_contract,
     }
 
 

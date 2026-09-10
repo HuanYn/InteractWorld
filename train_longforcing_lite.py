@@ -20,6 +20,7 @@ from typing import Any
 import torch
 
 from training.gpu_gate import query_dedicated_gpu, validate_confirmation
+from training.causal_tf import _prompt_contract
 from training.longforcing_lite import (
     METHOD_NAME,
     STAGE_NAME,
@@ -258,6 +259,11 @@ def _restore_resume(
     )
     if saved_scale != validate_action_scale(config.model.action_scale):
         raise ValueError("resume action_scale changed; use a new calibrated run")
+    saved_data = checkpoint.get("config", {}).get("data", {})
+    if not isinstance(saved_data, Mapping):
+        raise ValueError("resume has invalid prompt configuration")
+    if _prompt_contract(saved_data, checkpoint["manifest_hashes"]) != _prompt_contract(config.to_dict()["data"], hashes):
+        raise ValueError("resume prompt policy/path/hash contract changed; use a new run")
     load_trainable_state_dict(model, checkpoint["trainable_model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     torch.set_rng_state(checkpoint["torch_rng_state"])

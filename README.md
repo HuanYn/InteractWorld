@@ -33,8 +33,12 @@ warm start 允许显式改变文本缓存，严格 resume 仍检查完整配置�
 
 Causal 训练现要求静态文本 sidecar 的策略、路径、缓存/收据哈希及 `action_scale`
 与父 Action checkpoint 一致，不一致直接报错，不会静默退回旧 narrative。
-LongForcing 与 Demo 素材流程尚未完整接入静态文本，不能把此修补视为端到端贯通。
+LongForcing 的自生成历史与短窗口 replay 现共用该静态文本缓存，且严格继承
+Action/Causal 父模型的文本条件及动作尺度；旧版未声明缓存的配置仍保留原行为。
+Demo 素材从同一缓存收据读取准确文字，并绑定来源 episode；评测拒绝缺失或不一致的
+文本缓存/收据/文字。以上是 CPU 已覆盖的接口修复，尚未完成新下游 GPU 训练和画质验证。
 R005 是仅将 LoRA 学习率从 0 调至 2e-6 的候选实验，尚未通过画质、控制或 15 秒稳定性验证。
+MoBA、一致性蒸馏 CD 和完整 DMD 尚未实现；不能将这次条件修复描述为已完成这些方法。
 
 ## CPU 快速检查
 
@@ -192,8 +196,10 @@ run_gpu scripts/cache_scene_static_prompts.py --project-root "$INTERACTWORLD_ROO
 用 `--warm-start-from` 指向自己的已完成 Action checkpoint；按实际机器改写
 R004 模板里的数据、模型和输出路径。不要对旧运行直接改配置后 `--resume`。
 该模板保持非零动作尺度 0.03、Adapter 学习率 2e-5、LoRA 学习率 0，运行 780 新步。
-评估时也必须加载同一静态文本缓存并显示真正使用的文字；旧 Demo 素材准备流程
-默认仍用原叙述，不会因为训练配置新增文本缓存就自动替换它。
+后续新建 Causal 和 LongForcing 配置必须设置同一个 `data.prompt_cache_path` 和
+`model.action_scale`，并指向这一分支对应的父 checkpoint；不可接回旧叙述/尺度分支。
+Demo 素材准备会随实际训练配置选择静态文字并验证来源；只有未声明缓存的旧配置
+才保持原叙述。不要覆盖旧素材目录，修复后的素材与视频使用新目录。
 
 ### 4. 真实输入与 15 秒输出
 

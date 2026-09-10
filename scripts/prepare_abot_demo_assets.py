@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -67,6 +68,12 @@ def lineage_from_training(manifest: Path, training_config: Path, stage: str) -> 
             long_feature_index=config.data.long_feature_index_path,
             long_feature_receipt=config.data.long_feature_receipt_path,
         )
+    prompt_path = getattr(config.data, "prompt_cache_path", None)
+    if prompt_path is not None:
+        artifacts.update(
+            prompt_cache=prompt_path,
+            prompt_cache_receipt=str(Path(prompt_path).with_suffix(".pt.receipt.json")),
+        )
     return {
         "checkpoint_path": str(Path(config.training.output_dir) / "checkpoints/best.pt"),
         "checkpoint_sha256": None,
@@ -74,6 +81,32 @@ def lineage_from_training(manifest: Path, training_config: Path, stage: str) -> 
         "expected_base_model_path": config.model.base_model_path,
         "artifact_paths": artifacts,
     }
+
+
+def prompt_receipt_from_lineage(lineage: dict) -> dict | None:
+    """Reuse the exact text already encoded for training, without loading T5."""
+    artifacts = lineage["artifact_paths"]
+    path = artifacts.get("prompt_cache")
+    if path is None:
+        return None
+    from training.data.action_dataset import validate_scene_static_prompt_cache_binding
+    return validate_scene_static_prompt_cache_binding(
+        path, index_path=artifacts["feature_index"], manifest_path=artifacts["dataset_manifest"],
+    )
+
+
+def prompt_for_episode(record: dict, caption: object, receipt: dict | None) -> str:
+    if receipt is None:
+        return _flatten_caption(caption) or "Third-person world exploration."
+    from scripts.cache_scene_static_prompts import static_caption
+    identity = record["episode_id"]
+    binding = receipt["episodes"].get(identity)
+    if not binding or binding["split"] != record["split"]:
+        raise ValueError(f"static prompt is missing or has wrong split: {identity}")
+    text = static_caption(caption)
+    if text != binding["prompt"] or sha256_file(record["annotations_path"]) != binding["annotations_sha256"]:
+        raise ValueError(f"demo static caption/annotations differ from the training prompt cache: {identity}")
+    return binding["prompt"]
 
 
 def prepare(manifest: Path, output: Path, template: Path, *, training_config: Path | None = None,
@@ -89,6 +122,7 @@ def prepare(manifest: Path, output: Path, template: Path, *, training_config: Pa
         name = "causal_teacher_forcing_5090_week.yaml" if stage == "causal" else "longforcing_lite_5090_week.yaml"
         training_config = ROOT / "configs/train" / name
     lineage = lineage_from_training(manifest, training_config, stage)
+    prompt_receipt = prompt_receipt_from_lineage(lineage)
     records = sorted(
         (json.loads(line) for line in manifest.read_text().splitlines() if line.strip()),
         key=lambda item: item["episode_id"],
@@ -110,7 +144,8 @@ def prepare(manifest: Path, output: Path, template: Path, *, training_config: Pa
                 continue
             if any(pair.issubset(segment["keys"]) for pair in opposite for segment in segments):
                 continue
-            selected.append((record, sequence, start, segments, _flatten_caption(bundle.caption)))
+            selected.append((record, sequence, start, segments,
+                             prompt_for_episode(record, bundle.caption, prompt_receipt)))
             break
         if len(selected) == 3:
             break
@@ -123,7 +158,10 @@ def prepare(manifest: Path, output: Path, template: Path, *, training_config: Pa
     config["output_root"] = str(project / "eval" / "rollout15s")
     config["lineage"] = lineage
     config["scenes"] = []
-    receipt = {"kind": "held_out_source_assets_not_generated_video", "manifest_sha256": sha256_file(manifest), "scenes": []}
+    receipt = {"kind": "held_out_source_assets_not_generated_video", "manifest_sha256": sha256_file(manifest),
+               "prompt_policy": "scene_static_only_v1" if prompt_receipt else "original_feature_cache_prompt",
+               "prompt_artifacts": {name: sha256_file(path) for name, path in lineage["artifact_paths"].items()
+                                    if name in ("prompt_cache", "prompt_cache_receipt")}, "scenes": []}
     for index, (record, sequence, start, segments, caption) in enumerate(selected):
         scene_id = f"dev{index + 1}-{record['episode_id']}"
         scene_dir = output / scene_id
@@ -139,7 +177,7 @@ def prepare(manifest: Path, output: Path, template: Path, *, training_config: Pa
         np.save(initial, frames[0], allow_pickle=False)
         np.savez_compressed(anchors, frames=frames[[120, 180, 240]], frame_indices=np.array([120, 180, 240]))
         config["scenes"].append({
-            "scene_id": scene_id, "prompt": caption or "Third-person world exploration.",
+            "scene_id": scene_id, "source_episode_id": record["episode_id"], "prompt": caption,
             "initial_frame_path": str(initial), "reference_frames_path": str(anchors),
             "seed": 4201 + index, "action_segments": segments,
         })
@@ -147,6 +185,7 @@ def prepare(manifest: Path, output: Path, template: Path, *, training_config: Pa
             "episode_id": record["episode_id"], "split": "dev", "source_start": start,
             "source_video": record["video_path"], "annotations_sha256": sha256_file(record["annotations_path"]),
             "initial_sha256": sha256_file(initial), "anchors_sha256": sha256_file(anchors),
+            "prompt_sha256": hashlib.sha256(caption.encode("utf-8")).hexdigest(),
             "decode_backend": backend, "reference_use": "scoring_only_never_model_condition",
         })
         del frames, rgb

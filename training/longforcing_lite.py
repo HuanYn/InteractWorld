@@ -20,6 +20,7 @@ from typing import Any, Mapping, Protocol
 import torch
 from torch import nn
 
+from training.causal_tf import _prompt_contract, _validate_prompt_cache_path
 from training.models.action_adapter import ACTION_DIM, CANONICAL_ACTION_KEYS
 from training.models.action_adapter import build_action_context, validate_action_scale
 from training.models.lora import (
@@ -66,6 +67,7 @@ class LongForcingModelConfig:
 class LongForcingDataConfig:
     manifest_path: str = "/path/to/interactworld/data/manifests/train.jsonl"
     manifest_sha256: str | None = None
+    prompt_cache_path: str | None = None
     feature_index_path: str = (
         "/path/to/interactworld/data/features/train.features.jsonl"
     )
@@ -184,6 +186,10 @@ class LongForcingConfig:
             errors.append("the short training window must be 49 RGB frames / 4 blocks")
         if self.data.demo_rollout_frames != rgb_frames_for_blocks(20, self):
             errors.append("the demo rollout must be 241 RGB frames / exactly 15 seconds")
+        try:
+            _validate_prompt_cache_path(self.data.prompt_cache_path)
+        except ValueError as exc:
+            errors.append(str(exc))
         expected_feature_index = (
             Path(self.data.manifest_path).parent.parent
             / "features"
@@ -431,7 +437,34 @@ def artifact_hashes(config: LongForcingConfig, config_path: str | Path) -> dict[
     for name, digest in expected.items():
         if digest is not None and hashes[name] != digest:
             raise ValueError(f"{name} hash mismatch: expected {digest}, got {hashes[name]}")
+    if config.data.prompt_cache_path is not None:
+        from training.data.action_dataset import validate_scene_static_prompt_cache_binding
+
+        _validate_prompt_cache_path(config.data.prompt_cache_path)
+        prompt_path = Path(config.data.prompt_cache_path)
+        receipt = validate_scene_static_prompt_cache_binding(
+            prompt_path, index_path=config.data.feature_index_path, manifest_path=config.data.manifest_path,
+        )
+        hashes["prompt_cache"] = receipt["cache_sha256"]
+        hashes["prompt_cache_receipt"] = sha256_file(prompt_path.with_suffix(prompt_path.suffix + ".receipt.json"))
     return hashes
+
+
+def validate_parent_condition_contract(
+    payload: Mapping[str, Any], config: LongForcingConfig, hashes: Mapping[str, str], *, role: str,
+) -> None:
+    """Inherit both text policy and action gain; changing either needs a new parent."""
+    source = payload.get("config")
+    if not isinstance(source, Mapping) or not isinstance(source.get("model"), Mapping):
+        raise ValueError(f"{role} checkpoint has no serialized model configuration")
+    source_data = source.get("data", {})
+    source_hashes = payload.get("manifest_hashes")
+    if not isinstance(source_data, Mapping) or not isinstance(source_hashes, Mapping):
+        raise ValueError(f"{role} checkpoint has invalid prompt configuration/hashes")
+    if _prompt_contract(source_data, source_hashes) != _prompt_contract(asdict(config.data), hashes):
+        raise ValueError(f"{role} and LongForcing stages disagree on prompt policy/path/hash contract")
+    if validate_action_scale(source["model"].get("action_scale", 1.0)) != validate_action_scale(config.model.action_scale):
+        raise ValueError(f"{role} and LongForcing stages disagree on inherited model field action_scale")
 
 
 def _torch_load(path: str | Path) -> dict[str, Any]:
@@ -459,7 +492,8 @@ def load_parent_checkpoints(
     for key in SHARED_DATA_HASH_KEYS:
         if teacher_hashes.get(key) != hashes.get(key):
             raise ValueError(f"teacher checkpoint {key} lineage mismatch")
-    teacher_model = teacher.get("config", {}).get("model", {})
+    validate_parent_condition_contract(teacher, config, hashes, role="teacher")
+    teacher_model = teacher["config"]["model"]
     if teacher_model.get("base_model_path") != config.model.base_model_path:
         raise ValueError("teacher checkpoint uses a different base model")
     teacher_lineage = ParentLineage(
@@ -484,7 +518,8 @@ def load_parent_checkpoints(
         raise ValueError("causal checkpoint was not trained from the selected teacher checkpoint")
     if causal.get("parent_teacher") != teacher_lineage.as_dict():
         raise ValueError("causal checkpoint parent_teacher lineage is not exact")
-    causal_model = causal.get("config", {}).get("model", {})
+    validate_parent_condition_contract(causal, config, hashes, role="causal")
+    causal_model = causal["config"]["model"]
     if causal_model.get("base_model_path") != config.model.base_model_path:
         raise ValueError("causal checkpoint uses a different base model")
     if set(teacher_state) != set(causal_state):
@@ -782,6 +817,7 @@ class WanLongForcingBackend(WanLongForcingWindowStudent):
         replay.data.height = config.data.height
         replay.data.width = config.data.width
         replay.data.num_frames = config.data.short_window_frames
+        replay.data.prompt_cache_path = config.data.prompt_cache_path
         replay.training.micro_batch_size = config.training.micro_batch_size
         self._replay_config = replay
 
