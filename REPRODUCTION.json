@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "8e83ee461061e4971e02f19dc0676e690688444a",
+  "source_revision": "0d08944e8ca29251837cfcda19792666914586bf",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -235,8 +235,8 @@
       "source_path": "tests/test_causal_flow_solver.py"
     },
     "tests/test_causal_moba.py": {
-      "sha256": "9b3d3cf48b7f416a46857c9e0dc27bb71f67cf0909727db566511e87432e0034",
-      "bytes": 11100,
+      "sha256": "3999478d0483d40adf0c50c2f1a7be900364e14125f3099bf91162c278cb99b0",
+      "bytes": 17985,
       "source_path": "tests/test_causal_moba.py"
     },
     "tests/test_causal_reentrant_checkpoint.py": {
@@ -295,8 +295,8 @@
       "source_path": "tests/test_longforcing_prompt_dataset.py"
     },
     "tests/test_moba_rollout15s.py": {
-      "sha256": "ba952776e9e565fd9b80f01cb44a3cbedaa0685ef14c65651c155baf9199c4e8",
-      "bytes": 17557,
+      "sha256": "3e87b581594601371e5c34c8145594975ba73de8b77dbbdd73027c8ae7bb4994",
+      "bytes": 19049,
       "source_path": "tests/test_moba_rollout15s.py"
     },
     "tests/test_package_abot_demo.py": {
@@ -340,8 +340,8 @@
       "source_path": "train_action_teacher.py"
     },
     "train_causal_moba.py": {
-      "sha256": "52472d422868daf5b3d482a9a6372be534ad51aec8186b74edf639ecb845f08a",
-      "bytes": 13102,
+      "sha256": "0ba7fcafcb9372df7b686be17f4fa9e640fce0f327c87066cede2c8df9ad69a9",
+      "bytes": 18430,
       "source_path": "train_causal_moba.py"
     },
     "train_causal_teacher_forcing.py": {
@@ -635,5 +635,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1385396
+  "source_bytes": 1399101
 }

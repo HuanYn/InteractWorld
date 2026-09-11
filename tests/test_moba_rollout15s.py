@@ -29,7 +29,7 @@ from training.eval.wan_causal_adapter import (
 )
 from training.models.lora import LoRALinear, trainable_state_dict
 from training.runtime import sha256_file
-from train_causal_moba import _checkpoint_payload, _sampling_contract
+from train_causal_moba import _checkpoint_payload, _sampling_contract, validate_resume_checkpoint
 
 
 def _tiny_model():
@@ -232,6 +232,29 @@ def test_saved_cli_overrides_are_recorded_but_not_misidentified_as_source_tamper
     payload["sampling_contract"] = _sampling_contract(config)
     result = verify_checkpoint_lineage(_save(evaluation, payload))
     assert result["sampling_contract"]["virtual_samples"] == 640
+
+
+def test_real_extension_serializer_remains_bound_to_original_40step_yaml(tmp_path, monkeypatch):
+    evaluation, payload, config = _fixture(tmp_path, monkeypatch)
+    payload.update(step=40, micro_batches_consumed=320)
+    evaluation = _save(evaluation, payload)
+    source_sha = evaluation.lineage.checkpoint_sha256
+    original_yaml_sha = sha256_file(evaluation.lineage.artifact_paths["training_config"])
+    config.training.max_steps = 260
+    _, record = validate_resume_checkpoint(
+        evaluation.lineage.checkpoint_path, config=config, hashes=payload["manifest_hashes"],
+        teacher_lineage=payload["parent_teacher"], allow_horizon_extension=True,
+    )
+    model = _tiny_model()
+    extended = _checkpoint_payload(model, torch.optim.AdamW(model.parameters()), config=config,
+                                   step=60, micro_batches_consumed=480, metrics={"loss": 0.1},
+                                   manifest_hashes=payload["manifest_hashes"], teacher_lineage=payload["parent_teacher"],
+                                   continuations=[record])
+    result = verify_checkpoint_lineage(_save(evaluation, extended))
+    assert result["step"] == 60 and result["sampling_contract"]["virtual_samples"] == 2080
+    assert record["source_checkpoint_sha256"] == source_sha
+    assert extended["manifest_hashes"]["training_config"] == original_yaml_sha
+    assert sha256_file(evaluation.lineage.artifact_paths["training_config"]) == original_yaml_sha
 
 
 def _fake_runtime(monkeypatch, *, truncated=False):
