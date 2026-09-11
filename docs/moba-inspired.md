@@ -35,6 +35,13 @@ weight=0 的对照必须与候选保持同一父 checkpoint、噪声、数据次
 不能与来源不同的历史 TF 运行直接比较。顺序计算降低激活重叠，但不保证适合任意显存。
 验证通过后再接入正式生成；旧展示服务不会自动接受新 stage 或替换正在使用的模型。
 
+独立评测入口 `scripts/evaluate_rollout15s.py` 支持显式
+`lineage.expected_stage: causal_moba_regularized_v1`，但不会自动把旧配置迁移到新阶段。
+需要完整绑定实际训练 YAML、dataset/feature manifest、Action 父 checkpoint、静态文本缓存与收据，
+并提供准确 checkpoint SHA。旧 LongForcing 配置中的 causal/long-cache 来源不能作为这套新来源使用。
+检查会核对实际配置、方法权重、采样、父模型和参数形状；推理采用完整历史 KV 的因果模型、
+40步 Euler，不启用训练时的双向辅助分支。评测接口的 CPU 验证不代表新模型 GPU/画质已通过。
+
 验收沿用冻结首帧、静态文字、seed、动作的15秒原视频，分别检查形变与场景漂移；
 动作对照要求正确动作 weighted MSE 同时低于 zero 和 shuffled。
 loss 下降、CPU 测试通过和代码可启动均不能代替上述结果。

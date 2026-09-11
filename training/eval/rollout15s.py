@@ -37,6 +37,7 @@ TOTAL_RGB_FRAMES = 1 + FUTURE_RGB_FRAMES
 DURATION_SECONDS = (TOTAL_RGB_FRAMES - 1) / FPS
 ACTION_KEYS = ("W", "A", "S", "D", "I", "J", "K", "L")
 CAUSAL_STAGE = "causal_teacher_forcing_v1"
+MOBA_STAGE = "causal_moba_regularized_v1"
 LONGFORCING_STAGE = "longforcing_lite_v1"
 EXPECTED_STAGE = CAUSAL_STAGE  # Backward-compatible name used by the adapter.
 EXPECTED_PARENT_STAGE = "action_teacher_lora_v1"
@@ -129,8 +130,8 @@ class Rollout15sConfig:
             errors.append("run_id must be one safe path component")
         if ":" not in self.adapter_factory:
             errors.append("adapter_factory must be module:function")
-        if self.lineage.expected_stage not in (CAUSAL_STAGE, LONGFORCING_STAGE):
-            errors.append(f"expected_stage must be {CAUSAL_STAGE} or {LONGFORCING_STAGE}")
+        if self.lineage.expected_stage not in (CAUSAL_STAGE, MOBA_STAGE, LONGFORCING_STAGE):
+            errors.append(f"expected_stage must be {CAUSAL_STAGE}, {MOBA_STAGE} or {LONGFORCING_STAGE}")
         if not is_pinned_base_model(self.lineage.expected_base_model_path):
             errors.append("expected_base_model_path must be the pinned Wan2.2 revision")
         required_lineage = (
@@ -146,6 +147,11 @@ class Rollout15sConfig:
         prompt_keys = lineage_names.intersection(PROMPT_LINEAGE_KEYS)
         if prompt_keys and prompt_keys != set(PROMPT_LINEAGE_KEYS):
             errors.append("static prompt lineage requires both cache and receipt")
+        if self.lineage.expected_stage == MOBA_STAGE:
+            if lineage_names != set((*CAUSAL_LINEAGE_KEYS, *PROMPT_LINEAGE_KEYS)):
+                errors.append("MoBA evaluation requires exact Action-parent and scene-static prompt artifacts")
+            if self.adapter_factory != "training.eval.wan_causal_adapter:create_wan_causal_adapter":
+                errors.append("MoBA evaluation requires the explicit causal full-history adapter")
         indices = [anchor.frame_index for anchor in self.late_anchors]
         if indices != sorted(indices) or not indices or indices[0] < 120 or indices[-1] != 240:
             errors.append("late anchors must be sorted, start at frame >=120, and include frame 240")
@@ -408,8 +414,142 @@ def build_plan(config: Rollout15sConfig, config_path: str | Path) -> dict[str, A
     }
 
 
+def _canonical_contract(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, allow_nan=False)
+
+
+def reject_moba_stage_alias(payload: Mapping[str, Any]) -> None:
+    """A BID checkpoint cannot become a legacy stage by relabeling its header."""
+    saved = payload.get("config")
+    method = payload.get("method_contract")
+    if payload.get("stage") != MOBA_STAGE and (
+        isinstance(saved, dict) and "regularization" in saved
+        or isinstance(method, dict) and method.get("method") == "moba_inspired_sequential_bid_v1"
+    ):
+        raise ValueError("MoBA regularization checkpoint must retain its own distinct stage")
+
+
+def validate_moba_rollout_payload(payload: Mapping[str, Any]):
+    """Validate the new stage as itself, without importing GPU/model code.
+
+    This metadata check is repeated by the factory after the checkpoint hash
+    gate. ``verify_checkpoint_lineage`` additionally binds the actual source
+    YAML, data files and Action parent; metadata alone is not provenance.
+    """
+    from dataclasses import fields
+    import torch
+    from training.causal_moba import CausalMoBAConfig, method_contract
+    from training.causal_tf import _is_named_teacher_parameter
+    from train_causal_moba import _sampling_contract
+
+    if payload.get("format_version") != 1 or payload.get("stage") != MOBA_STAGE:
+        raise ValueError("MoBA rollout requires the exact causal_moba_regularized_v1 stage")
+    raw = payload.get("config")
+    config = CausalMoBAConfig()
+    sections = {field.name for field in fields(config)}
+    if not isinstance(raw, dict) or set(raw) != sections:
+        raise ValueError("MoBA checkpoint requires a complete serialized configuration")
+    for name in sections:
+        values, defaults = raw[name], getattr(config, name)
+        if not isinstance(values, dict) or set(values) != {field.name for field in fields(defaults)}:
+            raise ValueError(f"MoBA serialized {name} configuration has missing or unknown fields")
+        setattr(config, name, type(defaults)(**values))
+    config.validate()
+    if config.data.data_factory not in (
+        "training.data.action_dataset:build_action_teacher_dataloader",
+        "training.data.action_resampled:build_resampled_action_teacher_dataloader",
+    ):
+        raise ValueError("MoBA evaluation does not recognize the serialized sampling factory")
+    if _canonical_contract(payload.get("method_contract")) != _canonical_contract(method_contract(config)):
+        raise ValueError("MoBA method/regularization contract disagrees with serialized configuration")
+    if _canonical_contract(payload.get("sampling_contract")) != _canonical_contract(_sampling_contract(config)):
+        raise ValueError("MoBA sampling contract disagrees with serialized configuration")
+    if payload.get("initialization_mode") != "action_teacher_weights_only_fresh_optimizer_rng_step0":
+        raise ValueError("MoBA checkpoint has an unexpected initialization mode")
+    maximum, step, micro = config.training.max_steps, payload.get("step"), payload.get("micro_batches_consumed")
+    if (isinstance(maximum, bool) or not isinstance(maximum, int)
+            or isinstance(step, bool) or not isinstance(step, int) or not 0 < step <= maximum):
+        raise ValueError("MoBA checkpoint must contain a completed positive optimizer step within its budget")
+    if (isinstance(micro, bool) or not isinstance(micro, int)
+            or micro != step * config.training.gradient_accumulation_steps):
+        raise ValueError("MoBA checkpoint micro-batch position disagrees with its completed optimizer step")
+    state = payload.get("trainable_model")
+    if (not isinstance(state, dict) or not state
+            or any(not isinstance(name, str) or not _is_named_teacher_parameter(name) for name in state)
+            or not all(any(part in name for name in state)
+                       for part in ("act_control_adapter.", ".lora_a.", ".lora_b."))):
+        raise ValueError("MoBA checkpoint must contain named action-adapter and complete LoRA state")
+    for name, tensor in state.items():
+        if (not torch.is_tensor(tensor) or not tensor.is_floating_point()
+                or not bool(torch.isfinite(tensor).all())):
+            raise ValueError(f"MoBA checkpoint contains invalid trainable weights: {name}")
+    if payload.get("parent_causal") is not None:
+        raise ValueError("MoBA stage must retain its direct Action parent, not a causal-parent substitution")
+    return config
+
+
+def _verify_moba_source_lineage(payload: Mapping[str, Any], spec: LineageSpec, config) -> dict[str, Any]:
+    import torch
+    from training.causal_moba import load_moba_config, method_contract
+    from training.causal_tf import load_teacher_checkpoint
+
+    paths = spec.artifact_paths
+    hashes = payload["manifest_hashes"]
+    if set(paths) != set((*CAUSAL_LINEAGE_KEYS, *PROMPT_LINEAGE_KEYS)):
+        raise ValueError("MoBA evaluation requires exact source and static-prompt artifact paths")
+    consumed = {
+        "dataset_manifest": config.data.manifest_path,
+        "feature_index": config.data.feature_index_path,
+        "feature_receipt": config.data.feature_receipt_path,
+        "teacher_checkpoint": config.lineage.checkpoint_path,
+        "prompt_cache": config.data.prompt_cache_path,
+        "prompt_cache_receipt": str(Path(config.data.prompt_cache_path).with_suffix(".pt.receipt.json")),
+    }
+    if any(Path(path).resolve() != Path(paths[name]).resolve() for name, path in consumed.items()):
+        raise ValueError("MoBA serialized source paths differ from the pinned evaluation artifacts")
+    if config.data.manifest_sha256 not in (None, hashes["dataset_manifest"]):
+        raise ValueError("MoBA serialized manifest SHA-256 differs from its source")
+    if config.lineage.checkpoint_sha256 not in (None, hashes["teacher_checkpoint"]):
+        raise ValueError("MoBA serialized Action-parent SHA-256 differs from its source")
+    source = load_moba_config(paths["training_config"])
+    saved_dict, source_dict = config.to_dict(), source.to_dict()
+    # These are the two explicit CLI overrides in the training entry point.
+    # All model/data/optimizer/regularization fields remain source-YAML bound.
+    for value in (saved_dict, source_dict):
+        for name in ("max_steps", "output_dir"):
+            value["training"].pop(name)
+    if _canonical_contract(saved_dict) != _canonical_contract(source_dict):
+        raise ValueError("MoBA serialized configuration differs from the hashed source training config")
+    parent_payload, parent_lineage = load_teacher_checkpoint(config, hashes)
+    if isinstance(parent_payload.get("step"), bool):
+        raise ValueError("MoBA Action parent must have a positive integer optimizer step")
+    if _canonical_contract(payload["parent_teacher"]) != _canonical_contract(parent_lineage.as_dict()):
+        raise ValueError("MoBA parent-teacher record differs from the actual Action checkpoint")
+    state, parent_state = payload["trainable_model"], parent_payload["trainable_model"]
+    if set(state) != set(parent_state) or any(
+        not torch.is_tensor(parent_state[name])
+        or tuple(state[name].shape) != tuple(parent_state[name].shape) for name in state
+    ):
+        raise ValueError("MoBA trainable weights do not preserve the Action-parent parameter names/shapes")
+    return {
+        "method_contract": method_contract(config),
+        "sampling_contract": dict(payload["sampling_contract"]),
+        "initialization_mode": payload["initialization_mode"],
+        "regularization": dict(payload["config"]["regularization"]),
+        "action_scale": config.model.action_scale,
+        "inference_contract": {
+            "model_class": "CausalWanModel", "training_attention_mode": "causal",
+            "bidirectional_enabled": False, "context_mode": "full_history_kv",
+            "denoising_steps": 40, "streaming_solver": "flow_euler",
+            "timestep_shift": 5.0, "realtime": False,
+        },
+    }
+
+
 def verify_checkpoint_lineage(config: Rollout15sConfig) -> dict[str, Any]:
     spec = config.lineage
+    if spec.expected_stage not in (CAUSAL_STAGE, MOBA_STAGE, LONGFORCING_STAGE):
+        raise ValueError("evaluation requires an explicitly supported expected_stage")
     if not spec.checkpoint_sha256 or len(spec.checkpoint_sha256) != 64:
         raise ValueError("launch requires an exact checkpoint_sha256")
     checkpoint_path = Path(spec.checkpoint_path)
@@ -424,10 +564,13 @@ def verify_checkpoint_lineage(config: Rollout15sConfig) -> dict[str, Any]:
         payload = torch.load(checkpoint_path, map_location="cpu")
     if not isinstance(payload, dict) or payload.get("format_version") != 1:
         raise ValueError("checkpoint must be a format_version=1 mapping")
-    if payload.get("stage") != spec.expected_stage or not isinstance(payload.get("step"), int) or payload["step"] <= 0:
-        raise ValueError("checkpoint is not a completed causal_teacher_forcing_v1 step")
+    reject_moba_stage_alias(payload)
+    if (payload.get("stage") != spec.expected_stage or isinstance(payload.get("step"), bool)
+            or not isinstance(payload.get("step"), int) or payload["step"] <= 0):
+        raise ValueError(f"checkpoint is not a completed {spec.expected_stage} step")
     if not isinstance(payload.get("trainable_model"), Mapping) or not payload["trainable_model"]:
         raise ValueError("checkpoint has no named trainable model state")
+    moba_config = validate_moba_rollout_payload(payload) if spec.expected_stage == MOBA_STAGE else None
     hashes = payload.get("manifest_hashes")
     expected_keys = set(
         LONGFORCING_LINEAGE_KEYS
@@ -473,9 +616,12 @@ def verify_checkpoint_lineage(config: Rollout15sConfig) -> dict[str, Any]:
         raise ValueError("checkpoint base-model revision differs from the pinned evaluation base")
     if model.get("num_frame_per_block") != 3:
         raise ValueError("checkpoint does not use the required 3-latent causal block contract")
-    if spec.expected_stage == CAUSAL_STAGE:
+    moba_metadata = {}
+    if spec.expected_stage in (CAUSAL_STAGE, MOBA_STAGE):
         if model.get("independent_first_frame") is not True:
             raise ValueError("causal checkpoint did not train with an independent first frame")
+        if spec.expected_stage == MOBA_STAGE:
+            moba_metadata = _verify_moba_source_lineage(payload, spec, moba_config)
     else:
         if payload.get("method") != "LongForcing-lite" or payload.get("is_dmd") is not False:
             raise ValueError("stage-3 checkpoint is not the approved LongForcing-lite objective")
@@ -521,6 +667,7 @@ def verify_checkpoint_lineage(config: Rollout15sConfig) -> dict[str, Any]:
         "parent_teacher": dict(parent),
         "parent_causal": payload.get("parent_causal"),
         "prompt_contract": prompt_contract,
+        **moba_metadata,
     }
 
 
@@ -680,11 +827,13 @@ def run_rollout_suite(
         "scenes": [],
     }
     try:
+        adapter_kwargs = {"expected_stage": MOBA_STAGE} if config.lineage.expected_stage == MOBA_STAGE else {}
         adapter = adapter_factory(
             checkpoint_path=config.lineage.checkpoint_path,
             checkpoint_sha256=config.lineage.checkpoint_sha256,
             base_model_path=config.lineage.expected_base_model_path,
             device=device,
+            **adapter_kwargs,
         )
         for scene in config.scenes:
             initial = np.asarray(image_loader(scene.initial_frame_path))

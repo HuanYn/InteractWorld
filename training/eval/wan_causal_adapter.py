@@ -17,12 +17,15 @@ import numpy as np
 
 from training.eval.rollout15s import (
     EXPECTED_STAGE,
+    MOBA_STAGE,
     LATENT_FRAMES_PER_CHUNK,
     PINNED_BASE_MODEL,
     RGB_FRAMES_PER_CHUNK,
     CausalChunk,
     RolloutCursor,
     SceneSpec,
+    validate_moba_rollout_payload,
+    reject_moba_stage_alias,
 )
 from training.runtime import sha256_file
 from training.paths import is_pinned_base_model
@@ -58,6 +61,7 @@ class WanCausalRolloutAdapter:
         width: int = 832,
         height: int = 480,
         action_scale: float = 1.0,
+        checkpoint_method_contract: dict[str, Any] | None = None,
     ) -> None:
         self.pipeline = pipeline
         self.torch = torch_module
@@ -65,6 +69,9 @@ class WanCausalRolloutAdapter:
         self.checkpoint_path = checkpoint_path
         self.checkpoint_sha256 = checkpoint_sha256
         self.checkpoint_stage = checkpoint_stage
+        self.checkpoint_method_contract = (
+            dict(checkpoint_method_contract) if checkpoint_method_contract is not None else None
+        )
         self.width = width
         self.height = height
         self.action_scale = validate_action_scale(action_scale)
@@ -290,7 +297,7 @@ class WanCausalRolloutAdapter:
 def _denoising_steps(stage: str) -> list[int]:
     if stage == LONGFORCING_STAGE:
         return [1000, 750, 500, 250]
-    if stage == EXPECTED_STAGE:
+    if stage in (EXPECTED_STAGE, MOBA_STAGE):
         return list(range(1000, 0, -25))
     raise ValueError(f"unsupported rollout checkpoint stage: {stage!r}")
 
@@ -301,6 +308,7 @@ def create_wan_causal_adapter(
     checkpoint_sha256: str,
     base_model_path: str,
     device: str,
+    expected_stage: str | None = None,
 ) -> WanCausalRolloutAdapter:
     """Load the pinned base plus adapter/LoRA state into the real stream."""
 
@@ -309,23 +317,25 @@ def create_wan_causal_adapter(
     if sha256_file(checkpoint_path) != checkpoint_sha256.lower():
         raise ValueError("rollout checkpoint changed after the CPU lineage gate")
 
-    # Delayed heavy imports: this factory is called only after the GPU gate.
     import torch
-    from omegaconf import OmegaConf
-
-    from pipeline.causal_inference import CausalInferencePipeline
-    from training.models.lora import configure_action_teacher, load_trainable_state_dict
-
-    target = torch.device(device)
-    if target.type != "cuda" or not torch.cuda.is_available():
-        raise RuntimeError("the concrete Wan rollout adapter requires CUDA")
     try:
         payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     except TypeError:  # pragma: no cover
         payload = torch.load(checkpoint_path, map_location="cpu")
     if not isinstance(payload, dict):
         raise ValueError("rollout checkpoint must contain a mapping")
+    reject_moba_stage_alias(payload)
     stage = str(payload.get("stage"))
+    if expected_stage is not None and expected_stage != stage:
+        raise ValueError("rollout checkpoint stage differs from explicit expected_stage")
+    if stage == MOBA_STAGE:
+        # Deliberate eval opt-in only. Existing Web/demo callers do not pass
+        # expected_stage and therefore cannot silently activate this new stage.
+        if expected_stage != MOBA_STAGE:
+            raise ValueError("MoBA rollout requires explicit expected_stage=causal_moba_regularized_v1")
+        moba_config = validate_moba_rollout_payload(payload)
+        if moba_config.model.base_model_path != base_model_path:
+            raise ValueError("MoBA rollout base model differs from its serialized configuration")
     steps = _denoising_steps(stage)
     model_config = payload.get("config", {}).get("model", {})
     action_scale = validate_action_scale(model_config.get("action_scale", 1.0))
@@ -334,6 +344,15 @@ def create_wan_causal_adapter(
         from training.longforcing_lite import longforcing_config_from_dict
 
         longforcing_config = longforcing_config_from_dict(payload.get("config", {}))
+
+    # Delayed heavy imports: metadata rejection does not construct any models.
+    from omegaconf import OmegaConf
+    from pipeline.causal_inference import CausalInferencePipeline
+    from training.models.lora import configure_action_teacher, load_trainable_state_dict
+
+    target = torch.device(device)
+    if target.type != "cuda" or not torch.cuda.is_available():
+        raise RuntimeError("the concrete Wan rollout adapter requires CUDA")
 
     base = Path(base_model_path)
     config = OmegaConf.create(
@@ -369,6 +388,12 @@ def create_wan_causal_adapter(
         }
     )
     pipeline = CausalInferencePipeline(config, device=target)
+    if stage == MOBA_STAGE:
+        backbone = pipeline.generator.model
+        if (type(backbone).__name__ != "CausalWanModel"
+                or getattr(backbone, "local_attn_size", None) != -1
+                or getattr(backbone, "num_frame_per_block", None) != 3):
+            raise RuntimeError("MoBA evaluation must construct the actual full-history CausalWanModel")
     pipeline.generator.model.independent_first_frame = True
     configure_action_teacher(
         pipeline.generator.model,
@@ -408,4 +433,5 @@ def create_wan_causal_adapter(
         checkpoint_sha256=checkpoint_sha256,
         checkpoint_stage=stage,
         action_scale=action_scale,
+        checkpoint_method_contract=payload["method_contract"] if stage == MOBA_STAGE else None,
     )

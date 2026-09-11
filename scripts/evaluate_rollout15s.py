@@ -35,8 +35,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint-sha256")
     parser.add_argument(
         "--expected-stage",
-        choices=("longforcing_lite_v1", "causal_teacher_forcing_v1"),
-        help="use causal_teacher_forcing_v1 only as an explicit fallback",
+        choices=("longforcing_lite_v1", "causal_teacher_forcing_v1", "causal_moba_regularized_v1"),
+        help="explicit checkpoint stage; source configuration and lineage must match",
     )
     parser.add_argument("--confirmed-gpu-index", type=int)
     parser.add_argument("--confirmed-gpu-uuid")
