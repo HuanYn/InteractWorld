@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "c04896becb2230596b92598b874f021bba2c4278",
+  "source_revision": "c9058b69e0577c622c26e32a288804d7e73b930c",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,8 +30,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "431be7ceb136442efe7cfacb3828a9e38de4c12a4c872529efd9de35f9f9449b",
-      "bytes": 15324,
+      "sha256": "21eedf1a44d4d31feb31be3d67f8f26195e8a5da3993685a5936f04e192e9348",
+      "bytes": 16093,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -174,6 +174,11 @@
       "bytes": 10952,
       "source_path": "scripts/prepare_abot_demo_assets.py"
     },
+    "scripts/serve_abot_demo.py": {
+      "sha256": "a09397b538523b4c40d547ab5ba79913f85b917f8d2c4d1e6ab28631c441cbb5",
+      "bytes": 1168,
+      "source_path": "scripts/serve_abot_demo.py"
+    },
     "tests/test_abot_data.py": {
       "sha256": "dc3d0b2fce9bb82174cc751efcde39a684c44809a688a454a5af1e73fd1af937",
       "bytes": 7770,
@@ -239,14 +244,19 @@
       "bytes": 2902,
       "source_path": "tests/test_demo_scene_count.py"
     },
+    "tests/test_demo_service.py": {
+      "sha256": "67229382e7ab7a653d71824e7576a2b49e3b8fd96dcb55115db5f20c2bbf5e5e",
+      "bytes": 26369,
+      "source_path": "tests/test_demo_service.py"
+    },
     "tests/test_gpu_gate.py": {
       "sha256": "53aba785f5760e75ab7bfca8b0ecc6435ec402b27ff60960ca79ff2de3c2574e",
       "bytes": 2123,
       "source_path": "tests/test_gpu_gate.py"
     },
     "tests/test_input_header.py": {
-      "sha256": "a4c7eeaef69f6d5a10b1191a0c43c0aecbdbb330c7d79743eb850e65f33f43a5",
-      "bytes": 9819,
+      "sha256": "cc28a779f0d73e2f05eb63eaf12e7628a127f32fe399f16f460015797070d0ab",
+      "bytes": 11080,
       "source_path": "tests/test_input_header.py"
     },
     "tests/test_longforcing_lite.py": {
@@ -349,14 +359,59 @@
       "bytes": 4068,
       "source_path": "training/data/safe_annotations.py"
     },
+    "training/demo/README.md": {
+      "sha256": "7864301994ef3a981dd79ffb56a35cbcdb6d31dc308ed5660733896315c0da24",
+      "bytes": 8744,
+      "source_path": "training/demo/README.md"
+    },
+    "training/demo/__init__.py": {
+      "sha256": "8566fdaf1dc1d224dc3d4e6a26397a431281856f902d41a65cdc51f050898a5a",
+      "bytes": 79,
+      "source_path": "training/demo/__init__.py"
+    },
+    "training/demo/action_backend.py": {
+      "sha256": "58980e316ae6f92ab315c63f50ae06185cd93b986270fe6573c60aa55ce2f7fd",
+      "bytes": 15128,
+      "source_path": "training/demo/action_backend.py"
+    },
+    "training/demo/backend.py": {
+      "sha256": "856e9d8c50fddedefef0087d51761d9ddf438df56759acbd276227cdf56f0bd4",
+      "bytes": 16079,
+      "source_path": "training/demo/backend.py"
+    },
+    "training/demo/contracts.py": {
+      "sha256": "d19003ecb7608ccd37a2da90ec270b64073782ee72e996efb22d8eb83379bc56",
+      "bytes": 11737,
+      "source_path": "training/demo/contracts.py"
+    },
+    "training/demo/page.py": {
+      "sha256": "fdf2c92f752d583ce8226ff596665cfb7a68dc3bb3826373171662395fc01611",
+      "bytes": 6840,
+      "source_path": "training/demo/page.py"
+    },
+    "training/demo/prepare_action.py": {
+      "sha256": "f6c14d6cafaf1b91b5ee23ba72ce1ae26fe68f36983887f96baee968022e2528",
+      "bytes": 5787,
+      "source_path": "training/demo/prepare_action.py"
+    },
+    "training/demo/service.py": {
+      "sha256": "ca57ef7bdfe96ee4995b5e251bde66dafd0b65e593b2ab28854934d1beb76d45",
+      "bytes": 12272,
+      "source_path": "training/demo/service.py"
+    },
+    "training/demo/worker.py": {
+      "sha256": "1f67f3f94d92a248bc8970855f853ece31378e21b5935c625e7427c7072bf54d",
+      "bytes": 599,
+      "source_path": "training/demo/worker.py"
+    },
     "training/eval/__init__.py": {
       "sha256": "ad8c61726db4ee9a3116dbb6192111e9e93f4a46bd821fff5c57189592fdcde1",
       "bytes": 292,
       "source_path": "training/eval/__init__.py"
     },
     "training/eval/input_header.py": {
-      "sha256": "d5118816f1eabd970783271920a76556779652d9cc140bd2544d62e10b298cf1",
-      "bytes": 20863,
+      "sha256": "61eeaaf7c6f4901a5f97f3b6c97f38e7ac9b86a6113e26d7608a52700fa5abd8",
+      "bytes": 21114,
       "source_path": "training/eval/input_header.py"
     },
     "training/eval/rollout15s.py": {
@@ -530,5 +585,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1151879
+  "source_bytes": 1258962
 }

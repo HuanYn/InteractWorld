@@ -1,0 +1,31 @@
+"""Bundled, dependency-free loopback UI. All user text is rendered via textContent."""
+HTML = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>InterActWorld · 15 秒生成</title><link rel="stylesheet" href="/style.css">
+<main><header><span>INTERACTWORLD / LOCAL DEMO</span><h1>从初始画面，探索接下来的 15 秒</h1>
+<p>自训模型 · 异步生成，不是实时游戏。画质与动作可靠性仍在验证。</p></header>
+<section class="grid"><div><label>预置场景 <select id="scene"></select></label><img id="initial" alt="模型实际初始画面">
+<label>实际场景描述（只读）<textarea id="prompt" readonly rows="4"></textarea></label>
+<small>描述与已编码的静态文本绑定；尚未开放自由输入。</small><p id="source"></p>
+<label>随机种子 <input id="seed" type="number" min="0" max="4294967295" step="1"></label></div>
+<div><h2>动作时间线 · 16 fps / 240 步</h2><p>设置每段帧数和按键。箭头映射为 I / J / K / L；动作作为真实数值张量输入，不拼进提示词。</p>
+<div id="timeline"></div><button id="add">＋ 添加动作段</button><button id="preset">恢复原始动作</button>
+<p id="duration"></p><button class="primary" id="submit">提交 15 秒生成</button><p id="notice" role="status"></p></div></section>
+<section><h2>生成任务</h2><div id="jobs"></div></section>
+<footer>保持原始输出，不使用循环、慢放或插帧补时长。自定义动作没有配对真实未来，不提供伪造的 GT 误差。</footer></main>
+<script src="/app.js"></script></html>'''
+
+CSS = '''*{box-sizing:border-box}body{margin:0;background:#0b1018;color:#e4eaf1;font:15px/1.6 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:36px 24px}header span,small,footer{color:#91a4b8}h1{font-size:30px;line-height:1.25}h2{font-size:20px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:32px}section{margin-top:28px;border:1px solid #293544;border-radius:12px;padding:24px;background:#121b27}label{display:block;margin-bottom:12px}input,select,textarea,button{font:inherit;border-radius:6px;border:1px solid #415066;background:#182638;color:#e4eaf1;padding:7px 10px}textarea{width:100%;margin-top:6px;resize:vertical}button{cursor:pointer;margin:4px}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:#3b6ee8;border-color:#4f85ff}#initial{width:100%;border-radius:8px;margin:8px 0}#timeline{max-height:400px;overflow:auto}.segment{padding:8px;border-bottom:1px solid #344358}.segment input[type=number]{width:76px}.key{display:inline-block;font-size:13px;margin:5px 4px}.key input{accent-color:#588eff}.job{border-bottom:1px solid #344358;padding:16px 0}.job video{display:block;max-width:100%;width:832px;margin:12px 0}.job a{color:#9abbff;margin-right:16px}#notice{white-space:pre-wrap;color:#eccb88}footer{margin:30px 0}@media(max-width:800px){.grid{grid-template-columns:1fr}main{padding:20px 12px}section{padding:16px}}'''
+
+JS = ''''use strict';
+const $=id=>document.getElementById(id), labels={W:'W',A:'A',S:'S',D:'D',I:'↑ I',J:'← J',K:'↓ K',L:'→ L'};
+let state,segments=[],token='';
+function current(){return state.scenes.find(s=>s.scene_id===$('scene').value)}
+function duration(){const n=segments.reduce((a,s)=>a+s.frames,0);$('duration').textContent=`${n} / 240 帧 · ${(n/16).toFixed(2)} 秒`;$('submit').disabled=n!==240||!state.generation_enabled;}
+function draw(){const box=$('timeline');box.replaceChildren();segments.forEach((s,i)=>{const row=document.createElement('div');row.className='segment';const num=document.createElement('input');num.type='number';num.min=1;num.max=240;num.value=s.frames;num.setAttribute('aria-label',`第 ${i+1} 段帧数`);num.oninput=()=>{s.frames=Number(num.value);duration()};row.append(num,document.createTextNode(' 帧 '));Object.keys(labels).forEach(k=>{const lab=document.createElement('label');lab.className='key';const c=document.createElement('input');c.type='checkbox';c.checked=s.keys.includes(k);c.onchange=()=>{s.keys=c.checked?[...s.keys,k]:s.keys.filter(v=>v!==k)};lab.append(c,document.createTextNode(labels[k]));row.append(lab)});const del=document.createElement('button');del.textContent='删除';del.onclick=()=>{segments.splice(i,1);draw()};row.append(del);box.append(row)});duration()}
+function choose(){const s=current();$('initial').src=s.initial_url;$('prompt').value=s.prompt;$('seed').value=s.seed;$('source').textContent=`来源 ${s.source_episode_id} · 初帧 ${s.initial_sha256.slice(0,12)} · ${s.method}`;segments=structuredClone(s.action_segments);draw()}
+async function api(url,options){const r=await fetch(url,options);const body=await r.json();if(!r.ok)throw Error(body.error||r.statusText);return body}
+async function jobs(){try{const data=await api('/api/jobs');const box=$('jobs');for(const j of data.jobs){let el=document.getElementById('job-'+j.job_id);if(!el){el=document.createElement('article');el.className='job';el.id='job-'+j.job_id;box.prepend(el)}if(el.dataset.status===j.status)continue;el.dataset.status=j.status;el.replaceChildren();const p=document.createElement('p');p.textContent=`${j.job_id.slice(0,8)} · ${j.scene_id} · seed ${j.seed} · ${j.status}`;el.append(p);if(j.error){const e=document.createElement('p');e.textContent=j.error;el.append(e)}if(j.status==='completed'){const v=document.createElement('video');v.controls=true;v.preload='metadata';v.src=`/api/jobs/${j.job_id}/files/inputs.mp4`;el.append(v);for(const [name,label] of [['raw.mp4','下载原始视频'],['inputs.mp4','下载带输入栏视频'],['actions.npy','实际动作张量']]){const a=document.createElement('a');a.href=`/api/jobs/${j.job_id}/files/${name}?download=1`;a.textContent=label;a.download=name;el.append(a)}}}}catch(e){$('notice').textContent=e.message}}
+$('scene').onchange=choose;$('preset').onclick=choose;$('add').onclick=()=>{segments.push({frames:16,keys:[]});draw()};
+$('submit').onclick=async()=>{$('submit').disabled=true;try{await api('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json','X-InterActWorld-CSRF':token},body:JSON.stringify({scene_id:current().scene_id,seed:Number($('seed').value),action_segments:segments})});$('notice').textContent='已入队：将实际运行自训模型。';await jobs()}catch(e){$('notice').textContent=e.message}finally{duration()}};
+(async()=>{try{state=await api('/api/config');token=state.csrf_token;for(const s of state.scenes){const o=document.createElement('option');o.value=s.scene_id;o.textContent=s.scene_id;$('scene').append(o)}if(!state.generation_enabled)$('notice').textContent='预览模式：尚未配置操作员 GPU 授权与预算门禁，不能提交生成。';choose();await jobs();setInterval(jobs,2000)}catch(e){$('notice').textContent=e.message}})();
+'''

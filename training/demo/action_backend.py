@@ -1,0 +1,264 @@
+"""Actual Action-teacher UI inference:5x49 RGB,40 Euler, generated-RGB continuation.
+
+This is a newly seeded browser request, not a claim of frozen-noise regression,
+native15s context, reliable action control, or real-time generation. The initial
+RGB is encoded now; static text comes from its exact bound precomputed embedding.
+"""
+from __future__ import annotations
+
+import copy
+import gc
+import hashlib
+import json
+from pathlib import Path
+import time
+
+import numpy as np
+
+from training.demo.contracts import ACTION_ADAPTER, ACTION_METHOD, ACTION_STAGE, require, sha256
+
+WIDTH, HEIGHT = 832, 480
+VAE_SHA256 = '20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36'
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True)
+
+
+def compare_saved_config(saved, original, step):
+    require(isinstance(saved, dict), 'Action checkpoint serialized config missing')
+    previous, expected = copy.deepcopy(saved), copy.deepcopy(original)
+    saved_max = previous['training'].pop('max_steps')
+    original_max = expected['training'].pop('max_steps')
+    require(type(saved_max) is int and saved_max >= step and saved_max >= original_max,
+            'invalid same-run extended max_steps')
+    require(canonical(previous) == canonical(expected), 'Action checkpoint changed fields beyond max_steps')
+
+
+def tensor_sha(tensor):
+    import torch
+    return hashlib.sha256(tensor.detach().to(device='cpu', dtype=torch.float32).contiguous().numpy().tobytes()).hexdigest()
+
+
+def validate_action_config(raw):
+    require(raw.get('adapter_factory') == ACTION_ADAPTER and raw.get('method') == ACTION_METHOD,
+            'expected the explicit Action UI backend/method')
+    require(raw.get('sampler') == dict(solver='flow_euler', steps=40, shift=5.0, cfg='none'),
+            'Action UI sampler differs from40-step flow Euler')
+    require(raw['lineage'].get('expected_stage') == ACTION_STAGE, 'not an Action-teacher checkpoint')
+    geometry = raw['geometry']
+    require(all(geometry.get(key) == value for key, value in dict(width=WIDTH, height=HEIGHT, fps=16,
+            total_rgb_frames=241, num_chunks=5, chunk_rgb_frames=49, chunk_future_frames=48).items()),
+            'Action UI requires5x49 RGB /241 total frames at16fps')
+
+
+def load_action_inputs(raw, scene):
+    """CPU-only exact checkpoint/artifact/text binding; no future video/shard read."""
+    import torch
+    from training.config import load_config
+    from train_action_teacher import _manifest_hashes
+    from training.models.action_adapter import validate_action_scale
+    validate_action_config(raw)
+    spec = raw['lineage']
+    path = Path(spec['checkpoint_path'])
+    require(sha256(path) == spec['checkpoint_sha256'].lower(), 'Action checkpoint SHA mismatch')
+    config_path = Path(spec['artifact_paths']['training_config'])
+    config = load_config(config_path)
+    hashes = _manifest_hashes(config, config_path)
+    require(set(hashes) == set(spec['artifact_paths']), 'Action artifact schema changed')
+    expected_paths = dict(dataset_manifest=config.data.manifest_path,
+                          training_config=str(config_path),
+                          prompt_cache=config.data.prompt_cache_path)
+    from training.data.action_dataset import cache_index_path
+    index = cache_index_path(config.data.manifest_path)
+    expected_paths.update(feature_index=str(index), feature_receipt=str(index.with_suffix('.jsonl.receipt.json')),
+                          prompt_cache_receipt=str(Path(config.data.prompt_cache_path).with_suffix('.pt.receipt.json')))
+    require(all(Path(spec['artifact_paths'][key]).resolve() == Path(value).resolve() for key, value in expected_paths.items()),
+            'Action artifact paths differ from original training contract')
+    payload = torch.load(path, map_location='cpu', weights_only=False)
+    require(payload.get('format_version') == 1 and payload.get('stage') == ACTION_STAGE
+            and type(payload.get('step')) is int and payload['step'] > 0, 'not a completed self-trained Action checkpoint')
+    compare_saved_config(payload.get('config'), config.to_dict(), payload['step'])
+    require(payload.get('manifest_hashes') == hashes, 'checkpoint data/config/static-prompt hashes changed')
+    require(spec['expected_base_model_path'] == config.model.base_model_path, 'Action base-model pin changed')
+    scale = validate_action_scale(config.model.action_scale)
+    require(scale > 0, 'Action demo requires a nonzero actual conditioning scale')
+    state = payload.get('trainable_model')
+    require(isinstance(state, dict) and state and any('.lora_a.' in name for name in state),
+            'Action checkpoint has no actual trained LoRA state')
+    require(any('act_control_adapter.' in name for name in state), 'Action adapter weights missing')
+    lineage = dict(path=str(path.resolve()), sha256=spec['checkpoint_sha256'], stage=ACTION_STAGE,
+                   step=payload['step'], config=payload['config'], manifest_hashes=hashes,
+                   initialization=payload.get('initialization'), action_scale=scale)
+    del payload
+    gc.collect()
+    cache_path = Path(config.data.prompt_cache_path)
+    receipt = json.loads(cache_path.with_suffix('.pt.receipt.json').read_text(encoding='utf-8'))
+    binding = receipt.get('episodes', {}).get(scene['source_episode_id'])
+    require(binding and binding.get('split') == 'dev' and binding.get('prompt') == scene['prompt'],
+            'displayed Action prompt does not match the actual static embedding text/source')
+    # _manifest_hashes already validated the full immutable cache/receipt. Only
+    # inspect the selected tensor here; no all-episode numerical audit or T5 load.
+    cache = torch.load(cache_path, map_location='cpu', weights_only=True)
+    require(cache.get('schema_version') == 1 and cache.get('kind') == 'scene_static_prompt_cache',
+            'unexpected static prompt payload')
+    prompt = cache['prompt_embeds'][scene['source_episode_id']]
+    require(torch.is_tensor(prompt) and prompt.device.type == 'cpu' and prompt.is_floating_point()
+            and prompt.ndim == 2 and 1 <= prompt.shape[0] <= 512 and prompt.shape[1] == 4096
+            and bool(torch.isfinite(prompt).all()), 'selected static embedding is invalid')
+    prompt = prompt.detach().to(dtype=torch.bfloat16).clone()
+    del cache
+    gc.collect()
+    lineage['prompt_condition'] = dict(policy='scene_static_only_v1', text=scene['prompt'],
+                                      episode_id=scene['source_episode_id'], cache_sha256=hashes['prompt_cache'],
+                                      embedding_sha256_float32=tensor_sha(prompt), shape=list(prompt.shape), t5_loaded=False)
+    vae_path = Path(config.model.base_model_path) / 'Wan2.2_VAE.pth'
+    require(sha256(vae_path) == VAE_SHA256, 'Wan VAE differs from the verified Action cache/inference VAE')
+    lineage['vae'] = dict(path=str(vae_path), sha256=VAE_SHA256)
+    return state, config.model, prompt, lineage
+
+
+def rollout_chunks(*, initial_latent, initial_rgb, prompt, actions, seed, generate, decode, encode, emit):
+    """CPU-testable scheduling; callbacks own real model/VAE computation."""
+    import torch
+    require(tuple(initial_latent.shape) == (1, 1, 48, 30, 52), 'initial VAE latent shape mismatch')
+    require(actions.shape == (240, 8) and actions.dtype == np.float32, 'Action UI needs240x8 float32 actions')
+    rng = torch.Generator(device='cpu').manual_seed(seed)
+    first = initial_latent.detach().cpu().to(torch.bfloat16).clone()
+    rows, written = [], 0
+    for index in range(5):
+        keys = torch.from_numpy(actions[index * 48:(index + 1) * 48].copy()).unsqueeze(0)
+        noise = torch.randn((1, 13, 48, 30, 52), generator=rng, dtype=torch.float32, device='cpu')
+        row = dict(chunk=index, action_start=index * 48, action_stop=(index + 1) * 48,
+                   first_latent_sha256_float32=tensor_sha(first), noise_sha256_float32=tensor_sha(noise),
+                   action_sha256_float32=tensor_sha(keys),
+                   first_latent_source='submitted_RGB_encoded' if index == 0 else 'previous_generated_float_RGB_reencoded')
+        latent = generate(first, prompt, keys, noise, index)
+        require(tuple(latent.shape) == (1, 13, 48, 30, 52) and bool(torch.isfinite(latent).all()), 'generated chunk is not13 finite latent frames')
+        require(torch.equal(latent[:, :1].cpu(), first.to(latent.dtype).cpu()), 'sampler altered the clean first latent')
+        pixels = decode(latent, index)
+        require(tuple(pixels.shape) == (1, 49, 3, HEIGHT, WIDTH) and bool(torch.isfinite(pixels).all())
+                and pixels.min() >= -1 and pixels.max() <= 1, 'VAE must decode49 finite float RGB frames in[-1,1]')
+        # Frame0 is the actual submitted condition. Every subsequent frame is
+        # genuinely generated; decoded conditioning frames are not duplicated.
+        if index == 0:
+            emit(initial_rgb[None], 0)
+            written = 1
+        rgb = pixels[0, 1:].permute(0, 2, 3, 1).add(1).mul(127.5).round().clamp(0, 255).byte().numpy()
+        emit(rgb, written)
+        written += 48
+        endpoint = pixels[:, -1:].detach().permute(0, 2, 1, 3, 4).contiguous()
+        row.update(written_frames=written, endpoint_float_rgb_sha256=tensor_sha(endpoint))
+        if index < 4:
+            first = encode(endpoint, index).detach().cpu().to(torch.bfloat16)
+            require(tuple(first.shape) == (1, 1, 48, 30, 52), 'endpoint was not independently reencoded')
+        rows.append(row)
+        print(f'Action generation: chunk {index + 1}/5 complete; {written}/241 frames written', flush=True)
+    require(written == 241, 'Action UI generated an incorrect frame count')
+    return dict(method=ACTION_METHOD, chunks=rows, frames_written=written,
+                noise_policy='one_CPU_generator_seeded_by_request;five_consecutive_FP32_noise_draws',
+                frozen_noise_regression=False, initial_output='submitted_RGB_at_frame0',
+                continuation='previous_generated_float_RGB_before_uint8_reencoded',
+                native_long_context=False, realtime=False)
+
+
+def euler_rollout(model, *, first, noise, conditions, sigmas):
+    """The actual noncausal flow update; separately testable with CPU tensors."""
+    import torch
+    current = noise.clone()
+    current[:, :1] = first
+    for sigma, next_sigma in zip(sigmas[:-1], sigmas[1:]):
+        timestep = (sigma * 1000).expand(current.shape[:2]).clone()
+        timestep[:, 0] = 0
+        velocity, _ = model(current, conditional_dict=conditions, timestep=timestep,
+                            replace_first_timestep_and_noise_latents=True)
+        current = current + (next_sigma - sigma) * velocity
+        current[:, :1] = first
+        require(bool(torch.isfinite(current).all()), 'nonfinite Action Euler state')
+    return current
+
+
+def generate_action_video(*, state, model_config, prompt, initial, actions, seed, output_path):
+    """GPU-only real model path; caller must already pass standing/GPU/budget gates."""
+    import torch
+    import utils.wan_wrapper as wrappers
+    from training.models.lora import configure_action_teacher, load_trainable_state_dict
+    from training.models.action_adapter import build_action_context
+    from training.longforcing_lite import euler_sigmas
+    from training.eval.rollout15s import ffmpeg_writer_factory
+    require(initial.shape == (HEIGHT, WIDTH, 3) and initial.dtype == np.uint8, 'actual initial RGB is invalid')
+    model = wrappers.WanDiffusionWrapper(model_name=model_config.base_model_path, model_type='ci2v',
+                                         is_causal=False, timestep_shift=5.0, downscale_factor_control_adapter=16)
+    summary = configure_action_teacher(model.model, rank=model_config.lora_rank,
+                                       alpha=model_config.lora_alpha, dropout=model_config.lora_dropout)
+    require({name for name, value in model.named_parameters() if value.requires_grad} == set(state), 'Action trainable tensor names mismatch')
+    load_trainable_state_dict(model, state)
+    state.clear()
+    model.requires_grad_(False).eval().to(dtype=torch.bfloat16)
+    vae = wrappers.WanVAEWrapper(pretrained_path=str(Path(model_config.base_model_path) / 'Wan2.2_VAE.pth'))
+    vae.requires_grad_(False).eval().to(dtype=torch.bfloat16)
+    peak = 0
+
+    def capture_peak():
+        nonlocal peak
+        peak = max(peak, torch.cuda.max_memory_allocated())
+
+    def vae_on_gpu():
+        model.to('cpu')
+        gc.collect()
+        torch.cuda.empty_cache()
+        vae.to('cuda')
+
+    def encode(pixel, index):
+        vae_on_gpu()
+        with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+            value = vae.encode_to_latent(pixel.to(device='cuda', dtype=torch.bfloat16)).detach().cpu()
+        capture_peak()
+        return value
+
+    def generate(first, text, keys, noise, index):
+        vae.to('cpu')
+        gc.collect()
+        torch.cuda.empty_cache()
+        model.to('cuda')
+        condition = first.to(device='cuda', dtype=torch.bfloat16)
+        conditions = dict(prompt_embeds=[text.to(device='cuda', dtype=torch.bfloat16)],
+                          act_context_scale=model_config.action_scale,
+                          act_context=build_action_context(keys, height=HEIGHT, width=WIDTH, device='cuda', dtype=torch.bfloat16))
+        sigmas = euler_sigmas(40, shift=5.0, device=torch.device('cuda'), dtype=torch.bfloat16)
+        with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+            current = euler_rollout(model, first=condition, noise=noise.to(device='cuda', dtype=torch.bfloat16),
+                                    conditions=conditions, sigmas=sigmas)
+        capture_peak()
+        return current.detach().cpu()
+
+    def decode(latent, index):
+        vae_on_gpu()
+        with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+            value = vae.decode_to_pixel(latent.to(device='cuda', dtype=torch.bfloat16), use_cache=False, return_in_cpu=True)
+        capture_peak()
+        return value
+
+    writer = ffmpeg_writer_factory(output_path, WIDTH, HEIGHT, 16)
+    began = time.monotonic()
+    try:
+        pixel = torch.from_numpy(initial.copy()).permute(2, 0, 1).unsqueeze(0).unsqueeze(2).float().div(127.5).sub(1)
+        first = encode(pixel, -1)
+        report = rollout_chunks(initial_latent=first, initial_rgb=initial, prompt=prompt, actions=actions,
+                                seed=seed, generate=generate, decode=decode, encode=encode,
+                                emit=lambda frames, offset: writer.write(frames))
+        writer.close()
+    except BaseException:
+        writer.abort()
+        raise
+    finally:
+        model.to('cpu')
+        vae.to('cpu')
+        del model, vae
+        gc.collect()
+        torch.cuda.empty_cache()
+    report.update(elapsed_seconds=time.monotonic() - began, peak_vram_bytes=peak,
+                  trainable_parameters=summary.trainable_parameters,
+                  sampler=dict(solver='flow_euler', steps=40, shift=5.0, cfg='none'),
+                  t5_loaded=False, action_scale=model_config.action_scale)
+    return report

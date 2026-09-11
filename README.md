@@ -16,6 +16,15 @@ FlexAttention 为已知窗口形状保留有限的编译容量，并禁止静默
 
 不包含权重、数据、生成素材、训练日志、服务器配置或操作方授权记录。
 
+## 异步展示界面
+
+`scripts/serve_abot_demo.py` 提供预置场景、15秒真实动作时间线、任务队列、状态、播放和下载。
+每次生成调用本项目自训 checkpoint，不以历史录像代替新任务。视频上方照片与实际静态文本保留，
+提示词铺满照片右侧；左下 WASD、右下方向键显示模型收到的动作。
+界面默认仅预览；实际 GPU 生成需要部署方提供独立授权/预算门禁和完整模型资产。
+运行方式与验证边界见 [异步 Demo 文档](training/demo/README.md)。
+这仍是实验原型，不能据此宣称稳定15秒画质、可靠动作控制或实时性能。
+
 动作残差尺度现在贯通训练、LongForcing replay 与视频推理，并随 checkpoint 保存；
 旧 checkpoint 缺省仍按 1.0 读取，不会被悄悄改成新值。新建 Action 修复实验可用
 `--warm-start-from /path/to/action-checkpoint.pt` 只继承模型权重，重新初始化 optimizer、
@@ -233,6 +242,7 @@ run_gpu scripts/generate_abot_demo.py \
 输出包括原始 `*.mp4`、顶部输入栏版本 `*.inputs.mp4`、播放页 `index.html` 和来源 `receipt.json`。
 原始画面为 832×480、241 帧/16fps，首尾跨度 15 秒；输入栏另外增加 48 像素，
 顶部保留真实首帧缩略图和 prompt；同步按键默认放在画面左下 WASD、右下方向箭头。
+提示词铺满照片右侧可用宽度，右边只留8像素边距，不再给旧顶部按键预留空白。
 箭头仅是 I/J/K/L 的显示映射（↑/←/↓/→），不改动作张量、顺序或模型条件。
 左右按键 HUD 会覆盖对应的小块显示区域，画面不缩放、不裁剪、不补绘；原始视频单独保留。
 `InputHeaderRenderer` 和 `annotate_video` 可用 `layout="inline"` 重现旧顶部按键布局。

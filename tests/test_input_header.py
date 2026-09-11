@@ -72,20 +72,38 @@ def test_split_hud_maps_all_real_action_keys_and_changes_only_two_regions():
     assert metadata["actions_sha256"] == hashlib.sha256(actions.tobytes()).hexdigest()
 
 
-def test_split_hud_keeps_original_top_photo_prompt_seed_and_scroll_exact():
+def test_split_hud_expands_prompt_into_old_key_area_without_changing_photo_seed_or_text():
     frame, _ = _inputs()
     actions = np.ones((240, 8), dtype=np.float32)
     inputs = dict(initial_frame=frame, prompt="A quiet rocky courtyard. " * 80, actions=actions, seed=42)
     split, old = InputHeaderRenderer(**inputs), InputHeaderRenderer(**inputs, layout="inline")
-    assert split.prompt_left == old.prompt_left
-    assert split.prompt_width == old.prompt_width
-    assert split.scroll_travel == old.scroll_travel
-    assert split.metadata()["prompt_scroll_pixels_per_second"] == old.metadata()["prompt_scroll_pixels_per_second"]
+    assert split.prompt_left == old.prompt_left == 80
+    assert old.prompt_right == old.keys_left - 12 == 624
+    assert split.prompt_right == split.width - 8 == 824
+    assert split.prompt_width == old.prompt_width + 200 == 744
+    np.testing.assert_array_equal(np.asarray(split.prompt_strip), np.asarray(old.prompt_strip))
+    for renderer in (split, old):
+        metadata = renderer.metadata()
+        assert metadata["prompt"] == inputs["prompt"] and metadata["seed"] == 42
+        assert metadata["prompt_scroll_pixels_per_second"] <= 32
+        assert metadata["prompt_region"] == [80, 19, renderer.prompt_right, 45]
+        assert metadata["prompt_region_coordinates"] == "output_xyxy_right_bottom_exclusive"
+    assert old.scroll_distance - split.scroll_distance == 200
+    assert all(box[1:] == (23, old.keys_left + index * 24 + 20, 44)
+               for index, box in enumerate(old.key_boxes.values()))
     for index in (0, 1, 48, 120, 240):
         current, legacy = split.render(frame, index), old.render(frame, index)
-        np.testing.assert_array_equal(current[:HEADER_HEIGHT, :split.keys_left], legacy[:HEADER_HEIGHT, :old.keys_left])
-        # Old inline keys and INPUT label are absent; the historical prompt width is retained.
-        np.testing.assert_array_equal(current[:HEADER_HEIGHT, split.keys_left:], split.base.crop((split.keys_left, 0, split.width, HEADER_HEIGHT)))
+        np.testing.assert_array_equal(current[:HEADER_HEIGHT, :80], legacy[:HEADER_HEIGHT, :80])
+        np.testing.assert_array_equal(current[3:18, 80:old.prompt_right], legacy[3:18, 80:old.prompt_right])
+        # The former inline key area contains actual prompt glyphs, not blank padding or keys.
+        extension = current[19:45, split.keys_left:split.prompt_right]
+        offset = round(split.scroll_travel * index / max(1, split.frames - 1))
+        expected = split.prompt_strip.crop((offset + split.keys_left - split.prompt_left, 0,
+                                           offset + split.prompt_width, 26))
+        np.testing.assert_array_equal(extension, np.asarray(expected))
+        assert np.any(extension != np.asarray(split.base)[19:45, split.keys_left:split.prompt_right])
+        np.testing.assert_array_equal(current[:HEADER_HEIGHT, split.prompt_right:],
+                                      np.asarray(split.base)[:, split.prompt_right:])
 
 
 @pytest.mark.parametrize("key,tip", [("I", (24, 17)), ("J", (17, 24)), ("K", (24, 31)), ("L", (31, 24))])
@@ -105,8 +123,8 @@ def test_long_prompt_scrolls_and_complete_original_is_retained():
     assert renderer.scroll_distance > 0
     first = renderer.render(frame, 0)
     last = renderer.render(frame, 3)
-    assert not np.array_equal(first[19:45, renderer.prompt_left:renderer.keys_left - 12],
-                              last[19:45, renderer.prompt_left:renderer.keys_left - 12])
+    assert not np.array_equal(first[19:45, renderer.prompt_left:renderer.prompt_right],
+                              last[19:45, renderer.prompt_left:renderer.prompt_right])
     assert renderer.metadata()["prompt"] == prompt
     assert renderer.metadata()["prompt_display"] == "scrolling_excerpt"
     assert renderer.metadata()["prompt_scroll_pixels_per_second"] <= 32

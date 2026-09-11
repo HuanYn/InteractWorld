@@ -139,7 +139,8 @@ class InputHeaderRenderer:
         self.base.paste(thumb, (4 + (thumb_width - thumb.width) // 2, (HEADER_HEIGHT - thumb.height) // 2))
         self.keys_left = self.width - 8 * 24 - 4
         self.prompt_left = 80
-        self.prompt_width = self.keys_left - self.prompt_left - 12
+        self.prompt_right = self.width - 8 if self.layout == "split_hud" else self.keys_left - 12
+        self.prompt_width = self.prompt_right - self.prompt_left
         self.key_boxes = {
             key: (self.keys_left + index * 24, 23, self.keys_left + index * 24 + 20, 44)
             for index, key in enumerate(ACTION_KEYS)
@@ -241,6 +242,8 @@ class InputHeaderRenderer:
             "prompt_scroll_pixels": self.scroll_travel,
             "prompt_scroll_pixels_per_second": self.scroll_travel * self.fps / max(1, self.frames - 1),
             "prompt_full_text_in_metadata": True,
+            "prompt_region": [self.prompt_left, 19, self.prompt_right, 45],
+            "prompt_region_coordinates": "output_xyxy_right_bottom_exclusive",
             "key_layout": self.layout,
             "key_display_labels": {key: ARROW_LABELS.get(key, key) if self.layout == "split_hud" else key for key in ACTION_KEYS},
             "key_boxes": {key: list(box) for key, box in self.key_boxes.items()},
