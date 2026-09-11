@@ -18,11 +18,30 @@ SUPPORTED_STAGES = (ACTION_STAGE, 'causal_teacher_forcing_v1', 'longforcing_lite
 ADAPTER = 'training.eval.wan_causal_adapter:create_wan_causal_adapter'
 ACTION_ADAPTER = 'training.demo.action_backend:generate_action_video'
 ACTION_METHOD = 'action_teacher_chunked_ar15s_ui_v1'
+ACTION_JOINT_ADAPTER = 'training.demo.action_backend:generate_action_joint_video'
+ACTION_JOINT_METHOD = 'action_teacher_joint61_15s_ui_v1'
+ACTION_WINDOW6_ADAPTER = 'training.demo.action_backend:generate_action_window6_video'
+ACTION_WINDOW6_METHOD = 'action_teacher_window6_15s_ui_v1'
 
 
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def action_contract(method):
+    """Operator-selected inference modes; the legacy chunked mode stays default."""
+    require(method in (ACTION_METHOD, ACTION_JOINT_METHOD, ACTION_WINDOW6_METHOD), 'Action UI method must be explicit')
+    geometry = dict(width=832, height=480, fps=16, total_rgb_frames=241)
+    if method == ACTION_JOINT_METHOD:
+        geometry.update(joint_latent_frames=61, future_action_frames=240)
+        return ACTION_JOINT_ADAPTER, geometry
+    if method == ACTION_WINDOW6_METHOD:
+        geometry.update(num_chunks=3, chunk_future_frames=[96, 96, 48],
+                        chunk_latent_frames=[25, 25, 13], chunk_rgb_frames=[97, 97, 49])
+        return ACTION_WINDOW6_ADAPTER, geometry
+    geometry.update(num_chunks=5, chunk_rgb_frames=49, chunk_future_frames=48)
+    return ACTION_ADAPTER, geometry
 
 
 def sha256(path):
@@ -127,18 +146,21 @@ class Catalog:
         require(lineage.get('expected_stage') in SUPPORTED_STAGES,
                 'unsupported self-trained checkpoint stage')
         is_action = lineage['expected_stage'] == ACTION_STAGE
-        require(self.raw.get('adapter_factory') == (ACTION_ADAPTER if is_action else ADAPTER),
+        require(self.raw.get('adapter_factory') in ((ACTION_ADAPTER, ACTION_JOINT_ADAPTER, ACTION_WINDOW6_ADAPTER) if is_action else (ADAPTER,)),
+                'checkpoint stage does not match its concrete self-trained adapter')
+        action_spec = action_contract(self.raw.get('method')) if is_action else None
+        require(self.raw.get('adapter_factory') == (action_spec[0] if is_action else ADAPTER),
                 'checkpoint stage does not match its concrete self-trained adapter')
         require(re.fullmatch('[0-9a-fA-F]{64}', str(lineage.get('checkpoint_sha256', ''))),
                 'pin the exact self-trained checkpoint SHA before serving')
         require(Path(lineage['checkpoint_path']).name != 'best.pt', 'serve an immutable step checkpoint, not mutable best.pt')
         geometry = self.raw.get('geometry', {})
-        fixed = (dict(width=832, height=480, fps=16, total_rgb_frames=241, num_chunks=5,
-                      chunk_rgb_frames=49, chunk_future_frames=48) if is_action else
+        fixed = (action_spec[1] if is_action else
                  dict(fps=16, total_rgb_frames=241, num_chunks=20, latent_frames_per_chunk=3, rgb_frames_per_latent=4))
         require(all(geometry.get(key) == value for key, value in fixed.items()), 'unsupported timing contract')
         if is_action:
-            require(self.raw.get('method') == ACTION_METHOD, 'Action UI method must be explicit')
+            if self.raw['method'] != ACTION_METHOD:
+                require(set(geometry) == set(fixed), 'selected Action geometry must not contain other method fields')
             require(self.raw.get('sampler') == dict(solver='flow_euler', steps=40, shift=5.0, cfg='none'),
                     'Action UI uses the verified40-step flow Euler solver only')
         scenes = self.raw.get('scenes', [])

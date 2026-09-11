@@ -169,6 +169,8 @@ def validate_result(directory, request):
         require(result.get(key) == request[key], f'result {key} mismatch')
     require(result.get('total_rgb_frames') == 241 and result.get('fps') == 16, 'result is not a real15s rollout')
     require(result.get('ground_truth_future_used') is False, 'invalid generation provenance')
+    require(result.get('method', 'causal_rollout15s') == request.get('method', 'causal_rollout15s'),
+            'result inference method differs from the frozen request')
     for name in ('raw.mp4', 'inputs.mp4'):
         path = contained(directory / name, directory)
         require(path.is_file() and path.stat().st_size > 0 and result['videos'][name] == sha256(path), 'generated video missing or changed')
@@ -187,7 +189,7 @@ def run_model_job(directory, project_root, max_seconds):
         require(sha256(directory / name) == request[key], f'job input changed: {name}')
     require(not (directory / 'raw.mp4').exists() and not (directory / 'inputs.mp4').exists(), 'refusing to reuse previous output')
     from training.eval.rollout15s import load_rollout_config, verify_checkpoint_lineage, _run_variant, default_image_loader, ffmpeg_writer_factory
-    from training.demo.contracts import ADAPTER, ACTION_ADAPTER, ACTION_STAGE
+    from training.demo.contracts import ADAPTER, ACTION_JOINT_METHOD, ACTION_WINDOW6_METHOD, ACTION_STAGE, action_contract
     import yaml
     raw = yaml.safe_load((directory / 'rollout.yaml').read_text(encoding='utf-8'))
     is_action = raw.get('lineage', {}).get('expected_stage') == ACTION_STAGE
@@ -202,9 +204,11 @@ def run_model_job(directory, project_root, max_seconds):
         action_inputs = load_action_inputs(raw, raw['scenes'][0])
     else:
         config = load_rollout_config(directory / 'rollout.yaml')
-    require(config.adapter_factory == (ACTION_ADAPTER if is_action else ADAPTER) and len(config.scenes) == 1,
+    require(config.adapter_factory == (action_contract(raw['method'])[0] if is_action else ADAPTER) and len(config.scenes) == 1,
             'unexpected concrete backend/scene count')
     require(config.lineage.checkpoint_sha256 == request['checkpoint_sha256'], 'checkpoint pin changed')
+    require(raw.get('method', 'causal_rollout15s') == request.get('method', 'causal_rollout15s'),
+            'operator inference method differs from the frozen request')
     scene = config.scenes[0]
     require(scene.prompt == request['prompt'] and scene.seed == request['seed']
             and scene.scene_id == request['scene_id'] and scene.source_episode_id == request['source_episode_id'],
@@ -230,11 +234,13 @@ def run_model_job(directory, project_root, max_seconds):
     started = time.monotonic()
     initial = default_image_loader(directory / 'initial.npy')
     if is_action:
-        from training.demo.action_backend import generate_action_video
+        from training.demo.action_backend import generate_action_video, generate_action_joint_video, generate_action_window6_video
         state, model_config, prompt, _ = action_inputs
-        generation = generate_action_video(state=state, model_config=model_config, prompt=prompt,
-                                           initial=initial, actions=actions, seed=scene.seed,
-                                           output_path=directory / 'raw.mp4')
+        generate = (generate_action_joint_video if raw['method'] == ACTION_JOINT_METHOD else
+                    generate_action_window6_video if raw['method'] == ACTION_WINDOW6_METHOD else generate_action_video)
+        generation = generate(state=state, model_config=model_config, prompt=prompt,
+                              initial=initial, actions=actions, seed=scene.seed,
+                              output_path=directory / 'raw.mp4')
     else:
         from training.eval.wan_causal_adapter import create_wan_causal_adapter
         adapter = create_wan_causal_adapter(checkpoint_path=config.lineage.checkpoint_path,
@@ -243,6 +249,7 @@ def run_model_job(directory, project_root, max_seconds):
         _run_variant(config=config, scene=scene, variant='user_submitted_actions', actions=actions,
                      initial=initial, adapter=adapter, output_path=directory / 'raw.mp4', writer_factory=ffmpeg_writer_factory)
         generation = dict(method='causal_rollout15s', context_mode=getattr(adapter, 'context_mode', 'unspecified'))
+    require(generation['method'] == raw.get('method', 'causal_rollout15s'), 'generated with an unexpected inference method')
     display = annotate_video(directory / 'raw.mp4', directory / 'inputs.mp4', initial_frame=initial,
                              prompt=scene.prompt, actions=actions, seed=scene.seed, fps=16)
     result = dict(outcome='completed', job_id=request['job_id'], request_sha256=sha256(directory / 'request.json'),

@@ -1,7 +1,7 @@
-"""Actual Action-teacher UI inference:5x49 RGB,40 Euler, generated-RGB continuation.
+"""Actual Action-teacher UI inference: chunked by default, opt-in joint61.
 
 This is a newly seeded browser request, not a claim of frozen-noise regression,
-native15s context, reliable action control, or real-time generation. The initial
+trained native15s context, reliable action control, or real-time generation. The initial
 RGB is encoded now; static text comes from its exact bound precomputed embedding.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ import time
 
 import numpy as np
 
-from training.demo.contracts import ACTION_ADAPTER, ACTION_METHOD, ACTION_STAGE, require, sha256
+from training.demo.contracts import ACTION_METHOD, ACTION_JOINT_METHOD, ACTION_WINDOW6_METHOD, ACTION_STAGE, action_contract, require, sha256
 
 WIDTH, HEIGHT = 832, 480
 VAE_SHA256 = '20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36'
@@ -41,15 +41,17 @@ def tensor_sha(tensor):
 
 
 def validate_action_config(raw):
-    require(raw.get('adapter_factory') == ACTION_ADAPTER and raw.get('method') == ACTION_METHOD,
+    adapter, expected_geometry = action_contract(raw.get('method'))
+    require(raw.get('adapter_factory') == adapter,
             'expected the explicit Action UI backend/method')
     require(raw.get('sampler') == dict(solver='flow_euler', steps=40, shift=5.0, cfg='none'),
             'Action UI sampler differs from40-step flow Euler')
     require(raw['lineage'].get('expected_stage') == ACTION_STAGE, 'not an Action-teacher checkpoint')
     geometry = raw['geometry']
-    require(all(geometry.get(key) == value for key, value in dict(width=WIDTH, height=HEIGHT, fps=16,
-            total_rgb_frames=241, num_chunks=5, chunk_rgb_frames=49, chunk_future_frames=48).items()),
-            'Action UI requires5x49 RGB /241 total frames at16fps')
+    require(all(geometry.get(key) == value for key, value in expected_geometry.items()),
+            'Action UI geometry does not match the selected inference method')
+    if raw['method'] != ACTION_METHOD:
+        require(set(geometry) == set(expected_geometry), 'selected Action geometry must not contain other method fields')
 
 
 def load_action_inputs(raw, scene):
@@ -118,27 +120,35 @@ def load_action_inputs(raw, scene):
     return state, config.model, prompt, lineage
 
 
-def rollout_chunks(*, initial_latent, initial_rgb, prompt, actions, seed, generate, decode, encode, emit):
+def rollout_chunks(*, initial_latent, initial_rgb, prompt, actions, seed, generate, decode, encode, emit, window6=False):
     """CPU-testable scheduling; callbacks own real model/VAE computation."""
     import torch
     require(tuple(initial_latent.shape) == (1, 1, 48, 30, 52), 'initial VAE latent shape mismatch')
     require(actions.shape == (240, 8) and actions.dtype == np.float32, 'Action UI needs240x8 float32 actions')
     rng = torch.Generator(device='cpu').manual_seed(seed)
+    future_counts = (96, 96, 48) if window6 else (48,) * 5
+    mapped_noise = (joint_noise_from_chunks(torch.stack([
+        torch.randn((1, 13, 48, 30, 52), generator=rng, dtype=torch.float32, device='cpu') for _ in range(5)]))
+        if window6 else None)
     first = initial_latent.detach().cpu().to(torch.bfloat16).clone()
-    rows, written = [], 0
-    for index in range(5):
-        keys = torch.from_numpy(actions[index * 48:(index + 1) * 48].copy()).unsqueeze(0)
-        noise = torch.randn((1, 13, 48, 30, 52), generator=rng, dtype=torch.float32, device='cpu')
-        row = dict(chunk=index, action_start=index * 48, action_stop=(index + 1) * 48,
+    rows, written, action_start = [], 0, 0
+    for index, future_count in enumerate(future_counts):
+        action_stop = action_start + future_count
+        latent_frames = future_count // 4 + 1
+        keys = torch.from_numpy(actions[action_start:action_stop].copy()).unsqueeze(0)
+        noise = (torch.cat([mapped_noise[:, :1], mapped_noise[:, 1 + action_start // 4:1 + action_stop // 4]], dim=1)
+                 if window6 else torch.randn((1, 13, 48, 30, 52), generator=rng, dtype=torch.float32, device='cpu'))
+        row = dict(chunk=index, action_start=action_start, action_stop=action_stop,
+                   latent_frames=latent_frames, emitted_frames=future_count + (1 if index == 0 else 0),
                    first_latent_sha256_float32=tensor_sha(first), noise_sha256_float32=tensor_sha(noise),
                    action_sha256_float32=tensor_sha(keys),
                    first_latent_source='submitted_RGB_encoded' if index == 0 else 'previous_generated_float_RGB_reencoded')
         latent = generate(first, prompt, keys, noise, index)
-        require(tuple(latent.shape) == (1, 13, 48, 30, 52) and bool(torch.isfinite(latent).all()), 'generated chunk is not13 finite latent frames')
+        require(tuple(latent.shape) == (1, latent_frames, 48, 30, 52) and bool(torch.isfinite(latent).all()), 'generated chunk latent frame count or values changed')
         require(torch.equal(latent[:, :1].cpu(), first.to(latent.dtype).cpu()), 'sampler altered the clean first latent')
         pixels = decode(latent, index)
-        require(tuple(pixels.shape) == (1, 49, 3, HEIGHT, WIDTH) and bool(torch.isfinite(pixels).all())
-                and pixels.min() >= -1 and pixels.max() <= 1, 'VAE must decode49 finite float RGB frames in[-1,1]')
+        require(tuple(pixels.shape) == (1, future_count + 1, 3, HEIGHT, WIDTH) and bool(torch.isfinite(pixels).all())
+                and pixels.min() >= -1 and pixels.max() <= 1, 'VAE window frame count or finite float RGB values in[-1,1] changed')
         # Frame0 is the actual submitted condition. Every subsequent frame is
         # genuinely generated; decoded conditioning frames are not duplicated.
         if index == 0:
@@ -146,17 +156,19 @@ def rollout_chunks(*, initial_latent, initial_rgb, prompt, actions, seed, genera
             written = 1
         rgb = pixels[0, 1:].permute(0, 2, 3, 1).add(1).mul(127.5).round().clamp(0, 255).byte().numpy()
         emit(rgb, written)
-        written += 48
+        written += future_count
         endpoint = pixels[:, -1:].detach().permute(0, 2, 1, 3, 4).contiguous()
         row.update(written_frames=written, endpoint_float_rgb_sha256=tensor_sha(endpoint))
-        if index < 4:
+        if index + 1 < len(future_counts):
             first = encode(endpoint, index).detach().cpu().to(torch.bfloat16)
             require(tuple(first.shape) == (1, 1, 48, 30, 52), 'endpoint was not independently reencoded')
         rows.append(row)
-        print(f'Action generation: chunk {index + 1}/5 complete; {written}/241 frames written', flush=True)
+        action_start = action_stop
+        print(f'Action generation: chunk {index + 1}/{len(future_counts)} complete; {written}/241 frames written', flush=True)
     require(written == 241, 'Action UI generated an incorrect frame count')
-    return dict(method=ACTION_METHOD, chunks=rows, frames_written=written,
-                noise_policy='one_CPU_generator_seeded_by_request;five_consecutive_FP32_noise_draws',
+    return dict(method=ACTION_WINDOW6_METHOD if window6 else ACTION_METHOD, chunks=rows, frames_written=written,
+                noise_policy=('one_CPU_generator_seeded_by_request;five_consecutive_FP32_draws;future_slots_repartitioned24_24_12'
+                              if window6 else 'one_CPU_generator_seeded_by_request;five_consecutive_FP32_noise_draws'),
                 frozen_noise_regression=False, initial_output='submitted_RGB_at_frame0',
                 continuation='previous_generated_float_RGB_before_uint8_reencoded',
                 native_long_context=False, realtime=False)
@@ -178,7 +190,85 @@ def euler_rollout(model, *, first, noise, conditions, sigmas):
     return current
 
 
-def generate_action_video(*, state, model_config, prompt, initial, actions, seed, output_path):
+def joint_noise_from_chunks(noises):
+    """Map five independent13-slot draws to one61-slot state without redrawing.
+
+    All five old first slots are unused conditioning slots. Preserve the first
+    placeholder (Euler overwrites it) and all five ordered12-slot futures.
+    """
+    import torch
+    require(torch.is_tensor(noises) and noises.ndim == 6 and tuple(noises.shape[:4]) == (5, 1, 13, 48)
+            and noises.dtype == torch.float32 and noises.device.type == 'cpu'
+            and bool(torch.isfinite(noises).all()), 'joint noise requires five finite CPU FP32 13-slot draws')
+    return torch.cat([noises[0, :, :1], *[noises[index, :, 1:] for index in range(5)]], dim=1)
+
+
+def rollout_joint(*, initial_latent, initial_rgb, prompt, actions, seed, generate, decode, emit):
+    """One61-latent solve, then continuous cached VAE decode; no RGB feedback.
+
+    ``decode`` resets its VAE cache only at index0 and retains it thereafter.
+    Its first decoded frame warms the cache but is replaced by submitted RGB,
+    matching the existing browser protocol, not the frozen regression protocol.
+    """
+    import torch
+    require(tuple(initial_latent.shape) == (1, 1, 48, 30, 52), 'initial VAE latent shape mismatch')
+    require(actions.shape == (240, 8) and actions.dtype == np.float32
+            and np.isfinite(actions).all() and np.isin(actions, [0, 1]).all(),
+            'joint Action UI needs240x8 finite binary float32 actions')
+    rng = torch.Generator(device='cpu').manual_seed(seed)
+    noises = torch.stack([torch.randn((1, 13, 48, 30, 52), generator=rng, dtype=torch.float32, device='cpu')
+                          for _ in range(5)])
+    noise = joint_noise_from_chunks(noises)
+    first = initial_latent.detach().cpu().to(torch.bfloat16).clone()
+    keys = torch.from_numpy(actions.copy()).unsqueeze(0)
+    input_hashes = dict(first_latent_sha256_float32=tensor_sha(first), noise_sha256_float32=tensor_sha(noise),
+                        action_sha256_float32=tensor_sha(keys),
+                        source_noise_sha256_float32=[tensor_sha(value) for value in noises])
+    del noises
+    latent = generate(first, prompt, keys, noise, 0)
+    require(tuple(latent.shape) == (1, 61, 48, 30, 52) and bool(torch.isfinite(latent).all()),
+            'joint generation must return61 finite latent frames')
+    require(torch.equal(latent[:, :1].cpu(), first.to(latent.dtype).cpu()), 'sampler altered the clean first latent')
+    written, rows = 0, []
+    slices = [(0, 1, 1), *[(1 + index * 3, 4 + index * 3, 12) for index in range(20)]]
+    for index, (start, stop, expected_frames) in enumerate(slices):
+        pixels = decode(latent[:, start:stop], index)
+        require(tuple(pixels.shape) == (1, expected_frames, 3, HEIGHT, WIDTH)
+                and bool(torch.isfinite(pixels).all()) and pixels.min() >= -1 and pixels.max() <= 1,
+                'continuous VAE decode has invalid frame count/geometry/pixels')
+        rgb = (initial_rgb[None] if index == 0 else
+               pixels[0].permute(0, 2, 3, 1).add(1).mul(127.5).round().clamp(0, 255).byte().numpy())
+        emit(rgb, written)
+        written += expected_frames
+        rows.append(dict(latent_start=start, latent_stop=stop, frames=expected_frames,
+                         total_frames=written, use_cache=True, previous_generated_cache_retained=index != 0))
+    require(written == 241, 'joint Action UI generated an incorrect frame count')
+    print('Action joint generation: one61-latent solve and continuous decode complete;241/241 frames written', flush=True)
+    return dict(method=ACTION_JOINT_METHOD, input_hashes=input_hashes, decode_stream=rows,
+                frames_written=written, joint_sequence=True, latent_frames=61, action_rows=240,
+                initial_latent_unchanged=True, is_causal=False,
+                noise_policy='one_CPU_generator_seeded_by_request;five_consecutive_FP32_draws;ordered12_future_slots_each',
+                frozen_noise_regression=False, initial_output='submitted_RGB_at_frame0',
+                continuation='none;one_joint61_solve', rgb_endpoint_reencoding=False,
+                native_long_context=False, quality_evaluation='not_run', realtime=False)
+
+
+def generate_action_video(**kwargs):
+    """Default legacy5x49 generation, unchanged by joint-mode opt-in."""
+    return _generate_action_video(**kwargs, joint=False)
+
+
+def generate_action_joint_video(**kwargs):
+    """Opt-in one61-latent async generation, not real-time or quality certification."""
+    return _generate_action_video(**kwargs, joint=True)
+
+
+def generate_action_window6_video(**kwargs):
+    """Opt-in6+6+3s windows; unchanged floating RGB feedback and Euler sampler."""
+    return _generate_action_video(**kwargs, joint=False, window6=True)
+
+
+def _generate_action_video(*, state, model_config, prompt, initial, actions, seed, output_path, joint, window6=False):
     """GPU-only real model path; caller must already pass standing/GPU/budget gates."""
     import torch
     import utils.wan_wrapper as wrappers
@@ -189,6 +279,8 @@ def generate_action_video(*, state, model_config, prompt, initial, actions, seed
     require(initial.shape == (HEIGHT, WIDTH, 3) and initial.dtype == np.uint8, 'actual initial RGB is invalid')
     model = wrappers.WanDiffusionWrapper(model_name=model_config.base_model_path, model_type='ci2v',
                                          is_causal=False, timestep_shift=5.0, downscale_factor_control_adapter=16)
+    if joint or window6:
+        require(model.is_causal is False and model.uniform_timestep is True, 'Action windows require the noncausal wrapper')
     summary = configure_action_teacher(model.model, rank=model_config.lora_rank,
                                        alpha=model_config.lora_alpha, dropout=model_config.lora_dropout)
     require({name for name, value in model.named_parameters() if value.requires_grad} == set(state), 'Action trainable tensor names mismatch')
@@ -234,8 +326,10 @@ def generate_action_video(*, state, model_config, prompt, initial, actions, seed
 
     def decode(latent, index):
         vae_on_gpu()
+        if joint and index == 0:
+            vae.model.clear_cache()
         with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
-            value = vae.decode_to_pixel(latent.to(device='cuda', dtype=torch.bfloat16), use_cache=False, return_in_cpu=True)
+            value = vae.decode_to_pixel(latent.to(device='cuda', dtype=torch.bfloat16), use_cache=joint, return_in_cpu=True)
         capture_peak()
         return value
 
@@ -244,14 +338,16 @@ def generate_action_video(*, state, model_config, prompt, initial, actions, seed
     try:
         pixel = torch.from_numpy(initial.copy()).permute(2, 0, 1).unsqueeze(0).unsqueeze(2).float().div(127.5).sub(1)
         first = encode(pixel, -1)
-        report = rollout_chunks(initial_latent=first, initial_rgb=initial, prompt=prompt, actions=actions,
-                                seed=seed, generate=generate, decode=decode, encode=encode,
-                                emit=lambda frames, offset: writer.write(frames))
+        options = dict(initial_latent=first, initial_rgb=initial, prompt=prompt, actions=actions,
+                       seed=seed, generate=generate, decode=decode, emit=lambda frames, offset: writer.write(frames))
+        report = rollout_joint(**options) if joint else rollout_chunks(**options, encode=encode, window6=window6)
         writer.close()
     except BaseException:
         writer.abort()
         raise
     finally:
+        if joint:
+            vae.model.clear_cache()
         model.to('cpu')
         vae.to('cpu')
         del model, vae

@@ -52,6 +52,31 @@ not the separate frozen-latent/frozen-noise regression protocol, native long
 context, real-time generation, or proof of reliable action control. Original
 training YAML and source checkpoints are never modified.
 
+For an explicit asynchronous full-sequence alternative, add
+`--inference-mode joint61` to the preparation command. The default remains
+`chunked`. The joint method `action_teacher_joint61_15s_ui_v1` uses the same
+self-trained noncausal Action checkpoint and40-step Euler sampler, but solves
+all61 latent frames together with all240 action rows. It retains the ordered
+12 future-noise slots from each of the same five seeded13-slot draws; the
+first latent remains unchanged. After the DiT leaves the GPU, the VAE decodes
+continuously with one retained cache, without generated-RGB re-encoding or
+future ground-truth frames. The operator config records a separate adapter and
+joint geometry; a browser cannot change the method. This is still a newly
+seeded RGB-input UI protocol, not the frozen regression protocol or a claim
+that the checkpoint was trained on61-frame contexts. It does not establish
+general15-second stability, reliable control, or real-time performance.
+
+The separate operator opt-in `--inference-mode window6` selects
+`action_teacher_window6_15s_ui_v1`: 96/96/48 action rows drive25/25/13
+latent-frame windows with the same40-step Euler solver. The five seeded noise
+draws retain their60 ordered future slots, repartitioned24/24/12 without new
+draws. Each subsequent window re-encodes the preceding raw floating RGB endpoint
+in[-1,1], before uint8 conversion. Decoding97/97/49 frames and dropping the two
+repeated conditioning frames yields97+96+48=241 output frames; output frame0
+remains the submitted RGB. This is an inference-only candidate, not new training,
+the frozen regression protocol, or a general quality/control pass. The default
+`chunked` mode and browser request fields remain unchanged.
+
 Example `/path/to/interactworld/demo/deployment.json`:
 
 ```json

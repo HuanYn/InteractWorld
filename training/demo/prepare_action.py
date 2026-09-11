@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from training.demo.contracts import ACTION_ADAPTER, ACTION_METHOD, ACTION_STAGE, KEYS, action_array, load_initial, require, sha256
+from training.demo.contracts import ACTION_METHOD, ACTION_JOINT_METHOD, ACTION_WINDOW6_METHOD, ACTION_STAGE, KEYS, action_array, action_contract, load_initial, require, sha256
 
 
 def segments_from_array(array):
@@ -29,13 +29,16 @@ def segments_from_array(array):
 
 
 def prepare(*, training_config, checkpoint, checkpoint_sha256, initial_frame, episode_id,
-            action_input, output, seed=42, initial_origin='source_rgb'):
+            action_input, output, seed=42, initial_origin='source_rgb', inference_mode='chunked'):
     from training.config import load_config
     from training.data.action_dataset import cache_index_path
     from training.demo.action_backend import load_action_inputs
     import torch
     require(not output.exists(), 'refusing to overwrite an existing Action preset config')
     require(type(seed) is int and 0 <= seed <= 2**32 - 1, 'preset seed must be uint32')
+    require(inference_mode in ('chunked', 'joint61', 'window6'), 'unknown Action inference mode')
+    method = {'chunked': ACTION_METHOD, 'joint61': ACTION_JOINT_METHOD, 'window6': ACTION_WINDOW6_METHOD}[inference_mode]
+    adapter, geometry = action_contract(method)
     config = load_config(training_config)
     require(config.data.prompt_cache_path is not None, 'Action UI requires the actual static prompt cache')
     initial = load_initial(initial_frame)
@@ -60,10 +63,8 @@ def prepare(*, training_config, checkpoint, checkpoint_sha256, initial_frame, ep
                  initial_source_sha256=sha256(initial_frame),
                  seed=seed, action_segments=segments_from_array(actions),
                  preset_actions_source_sha256=sha256(action_input))
-    raw = dict(version=1, run_id='action-ui-preset', method=ACTION_METHOD,
-               adapter_factory=ACTION_ADAPTER,
-               geometry=dict(width=832, height=480, fps=16, total_rgb_frames=241,
-                             num_chunks=5, chunk_rgb_frames=49, chunk_future_frames=48),
+    raw = dict(version=1, run_id='action-ui-preset', method=method,
+               adapter_factory=adapter, geometry=geometry,
                sampler=dict(solver='flow_euler', steps=40, shift=5.0, cfg='none'),
                lineage=dict(checkpoint_path=str(checkpoint.resolve()), checkpoint_sha256=checkpoint_sha256.lower(),
                             expected_stage=ACTION_STAGE, expected_base_model_path=config.model.base_model_path,
@@ -79,7 +80,7 @@ def prepare(*, training_config, checkpoint, checkpoint_sha256, initial_frame, ep
     output.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), encoding='utf-8')
     return dict(status='cpu_action_preset_prepared', config=str(output), config_sha256=sha256(output),
                 checkpoint_step=lineage['step'], checkpoint_sha256=checkpoint_sha256,
-                method=ACTION_METHOD, static_prompt=scene['prompt'], initial_origin=initial_origin,
+                method=method, static_prompt=scene['prompt'], initial_origin=initial_origin,
                 fixed_noise_regression=False, t5_loaded=False, gpu_launched=False)
 
 
@@ -94,6 +95,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--initial-origin', choices=('source_rgb', 'decoded_condition_rgb'), default='source_rgb')
+    parser.add_argument('--inference-mode', choices=('chunked', 'joint61', 'window6'), default='chunked',
+                        help='operator-only opt-in; joint61 uses one solve; window6 uses6+6+3s RGB-feedback windows')
     args = parser.parse_args()
     print(json.dumps(prepare(**vars(args)), indent=2, ensure_ascii=False))
 

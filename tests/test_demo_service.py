@@ -75,7 +75,8 @@ def test_rejects_malformed_or_opposing_actions(segments):
         action_array(segments)
 
 
-@pytest.mark.parametrize('extra', ['prompt', 'gpu_uuid', 'command', 'checkpoint_path', 'initial_frame_path'])
+@pytest.mark.parametrize('extra', ['prompt', 'gpu_uuid', 'command', 'checkpoint_path', 'initial_frame_path',
+                                  'method', 'inference_mode', 'adapter_factory'])
 def test_browser_cannot_change_operator_fields(tmp_path, extra):
     deployment, _ = fixture(tmp_path)
     body = request()
@@ -352,10 +353,13 @@ def action_fixture(tmp_path, monkeypatch):
                 output=root / 'action-rollout.yaml', seed=42, initial_origin='source_rgb')
 
 
-def test_action_preset_actual_checkpoint_maxstep_and_static_embedding(tmp_path, monkeypatch):
+@pytest.mark.parametrize('inference_mode', ['chunked', 'joint61', 'window6'])
+def test_action_preset_actual_checkpoint_maxstep_and_static_embedding(tmp_path, monkeypatch, inference_mode):
     from training.demo.prepare_action import prepare
     from training.demo.action_backend import load_action_inputs
     args = action_fixture(tmp_path, monkeypatch)
+    if inference_mode != 'chunked':
+        args['inference_mode'] = inference_mode
     before = sha256(args['training_config'])
     report = prepare(**args)
     assert report['checkpoint_step'] == 1040 and not report['gpu_launched']
@@ -363,7 +367,11 @@ def test_action_preset_actual_checkpoint_maxstep_and_static_embedding(tmp_path, 
     assert sha256(args['training_config']) == before
     deployment = Deployment(args['output'], tmp_path, tmp_path / 'jobs')
     catalog = Catalog(deployment)
-    assert catalog.public()[0]['method'] == 'action_teacher_chunked_ar15s_ui_v1'
+    expected_method = {'chunked': 'action_teacher_chunked_ar15s_ui_v1',
+                       'joint61': 'action_teacher_joint61_15s_ui_v1',
+                       'window6': 'action_teacher_window6_15s_ui_v1'}[inference_mode]
+    assert catalog.public()[0]['method'] == expected_method
+    assert report['method'] == expected_method
     raw = yaml.safe_load(args['output'].read_text())
     _, model, prompt, lineage = load_action_inputs(raw, raw['scenes'][0])
     assert model.action_scale == .03 and tuple(prompt.shape) == (2, 4096)
@@ -376,7 +384,8 @@ def test_action_preset_actual_checkpoint_maxstep_and_static_embedding(tmp_path, 
         load_action_inputs(raw, changed)
 
 
-def test_action_worker_routes_actual_static_embedding_and_timeline_after_gate(tmp_path, monkeypatch):
+@pytest.mark.parametrize('inference_mode', ['chunked', 'joint61', 'window6'])
+def test_action_worker_routes_actual_static_embedding_and_timeline_after_gate(tmp_path, monkeypatch, inference_mode):
     """CPU interface test, not evidence that a GPU video was generated."""
     import torch
     import training.demo.backend as backend
@@ -385,6 +394,11 @@ def test_action_worker_routes_actual_static_embedding_and_timeline_after_gate(tm
     import training.gpu_gate as gate
     from training.demo.prepare_action import prepare
     args = action_fixture(tmp_path, monkeypatch)
+    if inference_mode != 'chunked':
+        args['inference_mode'] = inference_mode
+    expected_method = {'chunked': 'action_teacher_chunked_ar15s_ui_v1',
+                       'joint61': 'action_teacher_joint61_15s_ui_v1',
+                       'window6': 'action_teacher_window6_15s_ui_v1'}[inference_mode]
     prepare(**args)
     deployment = Deployment(args['output'], tmp_path, tmp_path / 'jobs')
     directory = deployment.jobs_root / ('c' * 32)
@@ -410,7 +424,7 @@ def test_action_worker_routes_actual_static_embedding_and_timeline_after_gate(tm
         assert np.all(kwargs['actions'][:120, 0] == 1) and np.all(kwargs['actions'][120:, 7] == 1)
         kwargs['output_path'].write_bytes(b'CPU-ACTION-WIRING-TEST-NOT-A-VIDEO')
         seen.append('actual-action-interface')
-        return {'method': 'action_teacher_chunked_ar15s_ui_v1', 'test_only': True}
+        return {'method': expected_method, 'test_only': True}
 
     def cpu_header(source, output, **kwargs):
         assert kwargs['prompt'] == 'A stable stone courtyard.' and kwargs['seed'] == 51
@@ -418,22 +432,33 @@ def test_action_worker_routes_actual_static_embedding_and_timeline_after_gate(tm
         output.write_bytes(b'CPU-ACTION-HUD-WIRING-TEST-NOT-A-VIDEO')
         return {'test_only': True}
 
-    monkeypatch.setattr(action, 'generate_action_video', cpu_generate)
+    factories = {'chunked': 'generate_action_video', 'joint61': 'generate_action_joint_video',
+                 'window6': 'generate_action_window6_video'}
+    selected = factories[inference_mode]
+    monkeypatch.setattr(action, selected, cpu_generate)
+    for unselected in set(factories.values()) - {selected}:
+        monkeypatch.setattr(action, unselected, lambda **kwargs: pytest.fail('operator method was not respected'))
     monkeypatch.setattr(header, 'annotate_video', cpu_header)
     result = backend.run_model_job(directory, deployment.project_root, 900)
     assert seen.index('physical-gate') < seen.index('actual-action-interface')
     assert result['lineage']['step'] == 1040 and result['lineage']['prompt_condition']['t5_loaded'] is False
-    assert result['method'] == 'action_teacher_chunked_ar15s_ui_v1'
+    assert result['method'] == expected_method
     assert result['job_id'] == directory.name and result['actions_sha256'] == frozen['actions_sha256']
     assert validate_result(directory, frozen)['ground_truth_future_used'] is False
+    wrong = copy.deepcopy(result)
+    wrong['method'] = 'action_teacher_chunked_ar15s_ui_v1' if inference_mode == 'joint61' else 'action_teacher_joint61_15s_ui_v1'
+    write_json(directory / 'receipt.json', wrong)
+    with pytest.raises(ValueError, match='inference method'):
+        validate_result(directory, frozen)
 
 
-def test_action_euler_preserves_initial_and_real_per_frame_timesteps():
+@pytest.mark.parametrize('latent_frames', [3, 25, 61])
+def test_action_euler_preserves_initial_and_real_per_frame_timesteps(latent_frames):
     import torch
     from training.demo.action_backend import euler_rollout
     seen = []
     first = torch.full((1, 1, 1, 1, 1), 7.0)
-    noise = torch.zeros((1, 3, 1, 1, 1))
+    noise = torch.zeros((1, latent_frames, 1, 1, 1))
 
     def model(current, *, conditional_dict, timestep, replace_first_timestep_and_noise_latents):
         assert replace_first_timestep_and_noise_latents is True
