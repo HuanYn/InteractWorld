@@ -22,6 +22,28 @@ EXPECTED_LATENT_SHAPE = (13, 48, 30, 52)
 EXPECTED_ACTION_SHAPE = (48, 8)
 SCENE_STATIC_PROMPT_CACHE_KIND = "scene_static_prompt_cache"
 SCENE_STATIC_PROMPT_POLICY = "scene_static_only_v1"
+WINDOW97_CACHE_KIND = "action_teacher_window97_features_v1"
+WINDOW97_ENCODING_POLICY = "independent_continuous_rgb_window_vae_v1"
+FROZEN_DEMO_EPISODE = "019285161503b1d49c72e81863eb17ef"
+
+
+def action_teacher_shapes(num_frames: int = 49) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Explicit supported contracts; never infer a new length from arbitrary shards."""
+    if num_frames not in (49, 97):
+        raise FeatureCacheError("action-teacher num_frames must be exactly 49 or 97")
+    return (1 + (num_frames - 1) // 4, 48, 30, 52), (num_frames - 1, 8)
+
+
+def validate_window97_contract(receipt: Mapping[str, Any]) -> None:
+    config = receipt.get("config", {})
+    if (receipt.get("kind") != WINDOW97_CACHE_KIND
+            or receipt.get("prompt_policy") != SCENE_STATIC_PROMPT_POLICY
+            or receipt.get("encoding_policy") != WINDOW97_ENCODING_POLICY
+            or receipt.get("split_policy") != "train_only_excluding_frozen_demo_v1"
+            or receipt.get("excluded_episode_ids") != [FROZEN_DEMO_EPISODE]
+            or tuple(config.get(key) for key in ("num_frames", "target_fps", "height", "width"))
+            != (97, 16, 480, 832)):
+        raise FeatureCacheError("window97 cache contract requires continuous RGB97, static prompt and train-only provenance")
 
 
 class FeatureCacheError(ValueError):
@@ -210,9 +232,12 @@ class PrecomputedActionDataset(Dataset[dict[str, torch.Tensor]]):
         timestep_shift: float = 5.0,
         verify_hashes: bool = True,
         prompt_cache_path: str | Path | None = None,
+        num_frames: int = 49,
     ) -> None:
         self.index_path = Path(index_path).resolve()
         self.seed = int(seed)
+        self.num_frames = int(num_frames)
+        self.expected_latent_shape, self.expected_action_shape = action_teacher_shapes(num_frames)
         self.timestep_shift = float(timestep_shift)
         if self.timestep_shift <= 0:
             raise ValueError("timestep_shift must be positive")
@@ -222,15 +247,45 @@ class PrecomputedActionDataset(Dataset[dict[str, torch.Tensor]]):
                 raise FileNotFoundError(f"precomputed cache receipt is missing: {receipt_path}")
             receipt_hint = json.loads(receipt_path.read_text(encoding="utf-8"))
             manifest_path = receipt_hint.get("manifest", "")
-        validate_feature_cache_binding(
+        cache_receipt = validate_feature_cache_binding(
             self.index_path, manifest_path, verify_hashes=verify_hashes
         )
+        if num_frames == 97:
+            validate_window97_contract(cache_receipt)
+            manifest_rows = _read_jsonl(Path(manifest_path))
+            if (split != "train" or not manifest_rows
+                    or any(row.get("split") != "train" or row.get("episode_id") == FROZEN_DEMO_EPISODE
+                           for row in manifest_rows)):
+                raise FeatureCacheError("window97 manifest must contain training episodes only, excluding frozen demo")
+            source_manifest = Path(str(cache_receipt.get("source_manifest", "")))
+            if (not source_manifest.is_absolute() or not source_manifest.is_file()
+                    or cache_receipt.get("source_manifest_sha256") != sha256_file(source_manifest)):
+                raise FeatureCacheError("window97 original source manifest hash/path mismatch")
+            source_rows = _read_jsonl(source_manifest)
+            source_by_id = {row.get("episode_id"): row for row in source_rows}
+            if len(source_by_id) != len(source_rows):
+                raise FeatureCacheError("window97 source manifest has duplicate episodes")
+            for row in manifest_rows:
+                source = source_by_id.get(row.get("episode_id"), {})
+                if (source.get("split") != "train" or any(row.get(key) != source.get(key)
+                        for key in ("video_path", "annotations_path"))):
+                    raise FeatureCacheError("window97 source episode split/path mismatch")
+        elif cache_receipt.get("kind") == WINDOW97_CACHE_KIND:
+            raise FeatureCacheError("window97 cache cannot be consumed under the old49 contract")
 
-        episodes = [record for record in _read_jsonl(self.index_path) if record.get("split") == split]
+        index_rows = _read_jsonl(self.index_path)
+        if num_frames == 97 and (any(row.get("split") != "train" for row in index_rows)
+                or len({row.get("episode_id") for row in index_rows}) != len(index_rows)):
+            raise FeatureCacheError("window97 feature index must contain unique training episodes only")
+        episodes = [record for record in index_rows if record.get("split") == split]
         episodes.sort(key=lambda item: str(item.get("episode_id", "")))
         if not episodes:
             raise FeatureCacheError(f"feature cache has no episodes for split {split!r}")
         for episode in episodes:
+            if num_frames == 97 and (episode.get("kind") != WINDOW97_CACHE_KIND
+                    or episode.get("episode_id") == FROZEN_DEMO_EPISODE
+                    or episode.get("episode_id") not in {row["episode_id"] for row in manifest_rows}):
+                raise FeatureCacheError("window97 feature index contains an unbound/forbidden episode")
             if not isinstance(episode.get("episode_id"), str):
                 raise FeatureCacheError("cache episode_id must be a string")
             shards = episode.get("shards")
@@ -253,6 +308,11 @@ class PrecomputedActionDataset(Dataset[dict[str, torch.Tensor]]):
                 raise FeatureCacheError("episode receipt escapes cache root") from exc
             if verify_hashes and sha256_file(receipt_file) != episode_receipt.get("sha256"):
                 raise FeatureCacheError(f"episode receipt hash mismatch: {receipt_file}")
+            if num_frames == 97:
+                bound_episode = json.loads(receipt_file.read_text(encoding="utf-8"))
+                validate_window97_contract({**bound_episode, "config": bound_episode.get("cache_binding", {}).get("config", {})})
+                if any(bound_episode.get(key) != episode.get(key) for key in ("episode_id", "split", "shards", "num_windows")):
+                    raise FeatureCacheError("window97 episode receipt identity/shard mismatch")
         self.episodes = episodes
         self.samples_per_episode = max(int(item["num_windows"]) for item in episodes)
         self.verify_hashes = bool(verify_hashes)
@@ -291,20 +351,30 @@ class PrecomputedActionDataset(Dataset[dict[str, torch.Tensor]]):
             count = int(shard["samples"])
             if offset < count:
                 payload = self._load_shard(str(shard["path"]), str(shard["sha256"]))
+                if self.num_frames == 97 and (payload.get("kind") != WINDOW97_CACHE_KIND
+                        or payload.get("episode_id") != episode["episode_id"]
+                        or payload.get("prompt_policy") != SCENE_STATIC_PROMPT_POLICY
+                        or payload.get("encoding_policy") != WINDOW97_ENCODING_POLICY):
+                    raise FeatureCacheError("window97 shard identity or continuous/static contract mismatch")
                 latent = payload["clean_latents"][offset].float()
                 actions = payload["actions"][offset].float()
                 prompt = (
                     payload["prompt_embeds"].float() if self._prompt_overrides is None
                     else self._prompt_overrides[episode["episode_id"]].to(dtype=torch.float32, copy=True)
                 )
-                if tuple(latent.shape) != EXPECTED_LATENT_SHAPE:
+                if tuple(latent.shape) != self.expected_latent_shape:
                     raise FeatureCacheError(
-                        f"latent must be {EXPECTED_LATENT_SHAPE}, got {tuple(latent.shape)}"
+                        f"latent must be {self.expected_latent_shape}, got {tuple(latent.shape)}"
                     )
-                if tuple(actions.shape) != EXPECTED_ACTION_SHAPE:
+                if tuple(actions.shape) != self.expected_action_shape:
                     raise FeatureCacheError(
-                        f"actions must be {EXPECTED_ACTION_SHAPE}, got {tuple(actions.shape)}"
+                        f"actions must be {self.expected_action_shape}, got {tuple(actions.shape)}"
                     )
+                if self.num_frames == 97 and (prompt.ndim != 2 or not 1 <= prompt.shape[0] <= 512
+                        or prompt.shape[1] != 4096 or not bool(torch.isfinite(prompt).all())
+                        or not bool(torch.isfinite(latent).all()) or not bool(torch.isfinite(actions).all())
+                        or not bool(((actions == 0) | (actions == 1)).all())):
+                    raise FeatureCacheError("window97 shard contains invalid prompt/latent/canonical actions")
                 result: dict[str, Any] = {
                     "clean_latents": latent,
                     "actions": actions,
@@ -374,6 +444,7 @@ def build_action_teacher_dataloader(*, config: Any, training: Any) -> DataLoader
         seed=training.seed,
         timestep_shift=5.0,
         prompt_cache_path=getattr(config, "prompt_cache_path", None),
+        num_frames=getattr(config, "num_frames", 49),
     )
     return DataLoader(
         dataset,

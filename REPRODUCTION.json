@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "40f35a1985a69c84c2e7cc9f33efec6eedf66ea3",
+  "source_revision": "8e677c918c3a28982f64759e9bcedab12bf5dec7",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -74,6 +74,11 @@
       "bytes": 1169,
       "source_path": "configs/train/action_teacher_lora_v1.yaml"
     },
+    "configs/train/action_teacher_window97_profile.yaml": {
+      "sha256": "71cda672b59d6f09f336c75f62938365cc1f63b890dde1ae8995354a269526a9",
+      "bytes": 1601,
+      "source_path": "configs/train/action_teacher_window97_profile.yaml"
+    },
     "configs/train/causal_moba_example.yaml": {
       "sha256": "988174f78f52a3874cfd34a1b62d681e81ac8295466e1e78e40fdc7347be8af3",
       "bytes": 1202,
@@ -143,6 +148,11 @@
       "sha256": "a13dd2f80a84653797515cc81b27a41f766231eff3e69f561f26825ec441674f",
       "bytes": 18858,
       "source_path": "scripts/cache_abot_long_features.py"
+    },
+    "scripts/cache_abot_window97_features.py": {
+      "sha256": "8363166551e4a472db5331dda8878beccd08b2703b824a34ab154444170c6f0c",
+      "bytes": 22823,
+      "source_path": "scripts/cache_abot_window97_features.py"
     },
     "scripts/cache_scene_static_prompts.py": {
       "sha256": "ae8d0e8124751ddba30a5395a1eefd53c4aa120059ca4d292689d2e7ce985351",
@@ -314,6 +324,11 @@
       "bytes": 19049,
       "source_path": "tests/test_moba_rollout15s.py"
     },
+    "tests/test_optimizer_step_profile.py": {
+      "sha256": "09c34c0795c2e1ed20187ca0b96386debf7cdf04926c66dcf77b70f9146c93bd",
+      "bytes": 3800,
+      "source_path": "tests/test_optimizer_step_profile.py"
+    },
     "tests/test_package_abot_demo.py": {
       "sha256": "8ceae30ae06a46afc56f9f5a29713f687a7d337d8c851609af32105c86bb2666",
       "bytes": 5134,
@@ -349,9 +364,19 @@
       "bytes": 11126,
       "source_path": "tests/test_wan_longforcing_adapter.py"
     },
+    "tests/test_window97_data.py": {
+      "sha256": "9ea920b7d9326aa72be67b0051e25da44e3bcf464777a185340b83ae8de7b1d2",
+      "bytes": 9614,
+      "source_path": "tests/test_window97_data.py"
+    },
+    "tests/test_window97_trainer.py": {
+      "sha256": "40986a58450c24266a45171187a5ad72f76324e55375c087de688454ae87595b",
+      "bytes": 13846,
+      "source_path": "tests/test_window97_trainer.py"
+    },
     "train_action_teacher.py": {
-      "sha256": "6ee91ef1f14a397e6c91ef8efe273e2843411317e43240d11561930c484a60f7",
-      "bytes": 43924,
+      "sha256": "dfc98d7c4bf9cfa0ed8ada6ba0defc197079377b8d5a447c0736cedf86de706d",
+      "bytes": 60649,
       "source_path": "train_action_teacher.py"
     },
     "train_causal_moba.py": {
@@ -380,8 +405,8 @@
       "source_path": "training/causal_tf.py"
     },
     "training/config.py": {
-      "sha256": "07b06654e07b011edf3def1d80150836f5043a29fb800696ba483cb6dea00b39",
-      "bytes": 7791,
+      "sha256": "b42137301f089dc5c5722ef134efd6f6d0a441b9311e215346c523a4174cbf5a",
+      "bytes": 8134,
       "source_path": "training/config.py"
     },
     "training/data/__init__.py": {
@@ -400,8 +425,8 @@
       "source_path": "training/data/abot_remote.py"
     },
     "training/data/action_dataset.py": {
-      "sha256": "ecac5578741efb864669f84f0f6ba64c143c6585c11b9ebff221624920fa29cf",
-      "bytes": 19328,
+      "sha256": "e67dc2225ab28276d2b52a6b5ad808d5643ca41e4e712e35189fb4d50d105d2e",
+      "bytes": 24605,
       "source_path": "training/data/action_dataset.py"
     },
     "training/data/action_resampled.py": {
@@ -525,8 +550,8 @@
       "source_path": "training/paths.py"
     },
     "training/runtime.py": {
-      "sha256": "dcf59860e5432c61120413bc1b8c20459b75549bc56942198150f086e76605f3",
-      "bytes": 4945,
+      "sha256": "559334f23f108d77f03e2de58b31ba176fed90dcb0ee66efb9e48aa8c62c2aa9",
+      "bytes": 16461,
       "source_path": "training/runtime.py"
     },
     "utils/action_alignment.py": {
@@ -650,5 +675,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1437423
+  "source_bytes": 1522968
 }

@@ -9,9 +9,11 @@ Expected data-factory contract
 The configured ``module:function`` is called as ``factory(config=cfg.data,
 training=cfg.training)`` and must return an iterable of mappings containing
 precomputed ``noisy_latents``, ``target_flow``, ``timesteps``,
-``prompt_embeds``, and ``actions``.  Actions are ``[B,48,8]`` for the 48 future
-RGB frames; latents are ``[B,13,48,30,52]`` (B,F,C,H,W).  Optional Wan
-conditions (``y``, ``clip_fea``) are forwarded unchanged.
+``prompt_embeds``, and ``actions``. The original 49-RGB-frame contract uses
+actions ``[B,48,8]`` and latents ``[B,13,48,30,52]`` (B,F,C,H,W). The explicit
+97-frame contract uses ``[B,96,8]`` and ``[B,25,48,30,52]`` independently
+encoded from continuous RGB windows. Optional Wan conditions (``y``,
+``clip_fea``) are forwarded unchanged.
 
 The repository does not publish ABot's teacher-training loader or optimizer
 state, so those are intentionally explicit integration boundaries rather than
@@ -23,6 +25,8 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import random
+import re
 import sys
 import time
 from collections.abc import Iterable, Mapping
@@ -31,6 +35,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 from training.config import ActionTeacherConfig, load_config
 from training.gpu_gate import query_dedicated_gpu, validate_confirmation
@@ -42,6 +47,7 @@ from training.models.lora import (
 )
 from training.runtime import (
     CheckpointManager,
+    OptimizerStepProfiler,
     ThroughputTracker,
     append_jsonl,
     collect_manifest_hashes,
@@ -58,6 +64,10 @@ SHARED_DATA_HASH_KEYS = ("dataset_manifest", "feature_index", "feature_receipt")
 PROMPT_CACHE_HASH_KEYS = ("prompt_cache", "prompt_cache_receipt")
 LEGACY_ACTION_FACTORY = "training.data.action_dataset:build_action_teacher_dataloader"
 RESAMPLED_ACTION_FACTORY = "training.data.action_resampled:build_resampled_action_teacher_dataloader"
+LENGTH_TRANSITION_SOURCE_STEP = 1040
+LENGTH_TRANSITION_DATA_FIELDS = frozenset({
+    "num_frames", "manifest_path", "manifest_sha256", "prompt_cache_path", "data_factory",
+})
 
 
 def _canonical_data_contract(value: Any) -> dict[str, Any]:
@@ -113,11 +123,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="explicit legacy-to-resampled data-factory transition; identical model/data/optimizer, weights only and fresh step zero",
     )
+    checkpoint.add_argument(
+        "--length-transition-from", default=None,
+        help="explicit 49-to-97-frame parent step1040 weights only; new optimizer and step zero",
+    )
+    parser.add_argument(
+        "--length-transition-sha256", default=None,
+        help="required exact parent checkpoint SHA256 for --length-transition-from",
+    )
+    parser.add_argument(
+        "--stop-after-step", type=int, default=None,
+        help="absolute optimizer-step execution cap; preserves fixed config/max_steps for strict resume",
+    )
+    parser.add_argument(
+        "--profile-runtime", action="store_true",
+        help="record synchronized optimizer-step/checkpoint and sampled driver memory measurements (automatic for97 frames)",
+    )
     parser.add_argument("--confirmed-gpu-index", type=int)
     parser.add_argument("--confirmed-gpu-uuid")
     parser.add_argument("--confirmed-at-utc")
     parser.add_argument("--allocation-profile")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if bool(args.length_transition_from) != bool(args.length_transition_sha256):
+        parser.error("--length-transition-from and --length-transition-sha256 must be supplied together")
+    if args.length_transition_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", args.length_transition_sha256):
+        parser.error("--length-transition-sha256 must be 64 lowercase hexadecimal characters")
+    if args.stop_after_step is not None and args.stop_after_step <= 0:
+        parser.error("--stop-after-step must be positive")
+    return args
 
 
 def _latent_shape(config: ActionTeacherConfig) -> tuple[int, int, int, int, int]:
@@ -208,7 +241,11 @@ def _manifest_hashes(config: ActionTeacherConfig, config_path: str | Path) -> di
 
     feature_index = cache_index_path(config.data.manifest_path)
     feature_receipt = feature_index.with_suffix(feature_index.suffix + ".receipt.json")
-    validate_feature_cache_binding(feature_index, config.data.manifest_path)
+    receipt = validate_feature_cache_binding(feature_index, config.data.manifest_path)
+    if config.data.num_frames == 97:
+        from training.data.action_dataset import validate_window97_contract
+
+        validate_window97_contract(receipt)
     hashes = collect_manifest_hashes(
         {
             "dataset_manifest": config.data.manifest_path,
@@ -396,6 +433,9 @@ def _checkpoint_payload(
         "manifest_hashes": manifest_hashes,
         "torch_rng_state": torch.get_rng_state(),
         "cuda_rng_state_all": torch.cuda.get_rng_state_all(),
+        "python_rng_state": random.getstate(),
+        "numpy_rng_state": np.random.get_state(),
+        "rng_contract_version": 2,
     }
     if initialization is not None:
         payload["initialization"] = dict(initialization)
@@ -601,6 +641,138 @@ def _load_warm_start_checkpoint(
     return dict(state), initialization
 
 
+def _load_length_transition_checkpoint(
+    path: str | Path,
+    *,
+    expected_sha256: str,
+    config: ActionTeacherConfig,
+    current_manifest_hashes: Mapping[str, str],
+) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    """Pin one parent and allow only the documented 49-to-97 cache transition.
+
+    Target feature receipts are validated by ``_manifest_hashes`` before this
+    function. They bind independently encoded continuous 97-frame RGB windows
+    and inline scene-static text. No parent optimizer, RNG, or data position is
+    returned: this is a new optimization stage, never source step 1041.
+    """
+    if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("length-transition requires an exact lowercase SHA256 pin")
+    source = Path(path).resolve()
+    if sha256_file(source) != expected_sha256:
+        raise ValueError("length-transition parent SHA256 does not match the required pin")
+    payload = torch.load(source, map_location="cpu", weights_only=False)
+    if sha256_file(source) != expected_sha256:
+        raise ValueError("length-transition checkpoint changed while loading")
+    if not isinstance(payload, Mapping):
+        raise ValueError("length-transition checkpoint must contain a mapping")
+    if payload.get("format_version") != 1 or payload.get("stage") != "action_teacher_lora_v1":
+        raise ValueError("length-transition requires an action_teacher_lora_v1 format_version=1 checkpoint")
+    if type(payload.get("step")) is not int or payload["step"] != LENGTH_TRANSITION_SOURCE_STEP:
+        raise ValueError("length-transition requires the pinned completed parent step1040")
+    source_config = payload.get("config")
+    source_hashes = payload.get("manifest_hashes")
+    if not isinstance(source_config, Mapping) or not isinstance(source_hashes, Mapping):
+        raise ValueError("length-transition requires source configuration and artifact hashes")
+    target_config = config.to_dict()
+    if set(source_config) != set(target_config):
+        raise ValueError("length-transition configuration sections differ")
+    for section in ("model", "optimizer"):
+        if source_config.get(section) != target_config[section]:
+            raise ValueError(f"length-transition {section} contract must remain identical")
+    source_data = _canonical_data_contract(source_config.get("data"))
+    target_data = _canonical_data_contract(target_config["data"])
+    if source_data.get("num_frames") != 49 or target_data.get("num_frames") != 97:
+        raise ValueError("length-transition permits only 49-to-97 RGB frames")
+    if source_data.get("data_factory") != LEGACY_ACTION_FACTORY or target_data.get("data_factory") != LEGACY_ACTION_FACTORY:
+        raise ValueError("length-transition requires the same verified action_dataset factory")
+    for side in (source_data, target_data):
+        if (side.get("height"), side.get("width"), side.get("rgb_frames_per_action_token")) != (480, 832, 4):
+            raise ValueError("length-transition requires 480x832 and four RGB frames per action token")
+    if {key: value for key, value in source_data.items() if key not in LENGTH_TRANSITION_DATA_FIELDS} != {
+        key: value for key, value in target_data.items() if key not in LENGTH_TRANSITION_DATA_FIELDS
+    }:
+        raise ValueError("length-transition data contract differs beyond length/cache fields")
+    if source_data.get("manifest_path") == target_data.get("manifest_path"):
+        raise ValueError("length-transition requires a dedicated new 97-frame manifest")
+    source_prompt = _prompt_contract(source_data, source_hashes)
+    if source_prompt["policy"] != "scene_static_only_v1" or target_data.get("prompt_cache_path") is not None:
+        raise ValueError("length-transition requires static sidecar-to-inline feature prompts")
+    allowed_source_hashes = {*SHARED_DATA_HASH_KEYS, *PROMPT_CACHE_HASH_KEYS, "training_config"}
+    allowed_target_hashes = {*SHARED_DATA_HASH_KEYS, "training_config"}
+    if set(source_hashes) != allowed_source_hashes or set(current_manifest_hashes) != allowed_target_hashes:
+        raise ValueError("length-transition artifact hash keys differ from the documented cache transition")
+    for key in allowed_source_hashes:
+        if not source_hashes.get(key):
+            raise ValueError(f"length-transition source is missing {key} hash")
+    for key in allowed_target_hashes:
+        if not current_manifest_hashes.get(key) or source_hashes.get(key) == current_manifest_hashes[key]:
+            raise ValueError(f"length-transition requires a new bound {key} hash")
+    source_training = source_config.get("training")
+    if not isinstance(source_training, Mapping):
+        raise ValueError("length-transition requires source training configuration")
+    allowed_training_fields = {"max_steps", "output_dir"}
+    if {key: value for key, value in source_training.items() if key not in allowed_training_fields} != {
+        key: value for key, value in target_config["training"].items() if key not in allowed_training_fields
+    }:
+        raise ValueError("length-transition training contract differs beyond max_steps/output_dir")
+    source_output = source_training.get("output_dir")
+    if not isinstance(source_output, str) or Path(source_output).resolve() == Path(config.training.output_dir).resolve():
+        raise ValueError("length-transition requires a different fresh output directory")
+    if payload.get("micro_batches_consumed") != LENGTH_TRANSITION_SOURCE_STEP * config.training.gradient_accumulation_steps:
+        raise ValueError("length-transition parent micro-batch position is inconsistent")
+    state = payload.get("trainable_model")
+    if not isinstance(state, Mapping) or not state or any(
+        not isinstance(name, str) or not torch.is_tensor(value) for name, value in state.items()
+    ):
+        raise ValueError("length-transition trainable model must map parameter names to tensors")
+    changed_fields = sorted(key for key in source_data if source_data[key] != target_data.get(key))
+    return dict(state), {
+        "mode": "length_transition_weights_only", "path": str(source), "sha256": expected_sha256,
+        "source_stage": payload["stage"], "source_step": payload["step"],
+        "source_config": dict(source_config), "source_manifest_hashes": dict(source_hashes),
+        "target_manifest_hashes": dict(current_manifest_hashes),
+        "source_initialization": payload.get("initialization"),
+        "length_transition": {
+            "version": 1, "source_rgb_frames": 49, "target_rgb_frames": 97,
+            "source_latent_frames": 13, "target_latent_frames": 25,
+            "source_future_actions": 48, "target_future_actions": 96,
+            "changed_data_fields": changed_fields,
+            "encoding_policy": "independent_continuous_rgb_window_vae_v1",
+            "target_cache_kind": "action_teacher_window97_features_v1",
+            "model_contract_unchanged": True, "optimizer_config_unchanged": True,
+            "source_position_restored": False,
+        },
+        "prompt_transition": {
+            "policy_changed": False, "storage_changed": True, "policy": "scene_static_only_v1",
+            "source": source_prompt, "target": {"storage": "inline_97_frame_feature_shards", "policy": "scene_static_only_v1"},
+        },
+        "optimizer_restored": False, "rng_restored": False, "start_step": 0,
+        "micro_batches_consumed": 0, "seed": config.training.seed,
+    }
+
+
+def _execution_limit(max_steps: int, stop_after_step: int | None, start_step: int = 0) -> int:
+    if stop_after_step is not None and (type(stop_after_step) is not int or stop_after_step <= 0):
+        raise ValueError("stop_after_step must be a positive absolute optimizer step")
+    limit = max_steps if stop_after_step is None else min(max_steps, stop_after_step)
+    if start_step >= limit:
+        raise ValueError("execution limit must extend beyond the resumed optimizer step")
+    return limit
+
+
+def _restore_rng_state(checkpoint: Mapping[str, Any], *, require_complete: bool) -> None:
+    if require_complete and any(key not in checkpoint for key in (
+        "python_rng_state", "numpy_rng_state", "torch_rng_state", "cuda_rng_state_all",
+    )):
+        raise ValueError("97-frame strict resume requires complete Python/NumPy/Torch/CUDA RNG state")
+    torch.set_rng_state(checkpoint["torch_rng_state"])
+    torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state_all"])
+    if "python_rng_state" in checkpoint:
+        random.setstate(checkpoint["python_rng_state"])
+    if "numpy_rng_state" in checkpoint:
+        np.random.set_state(checkpoint["numpy_rng_state"])
+
+
 def _load_sampling_transition_checkpoint(
     path: str | Path,
     *,
@@ -713,9 +885,17 @@ def launch(
     allocation_profile: str,
     warm_start_from: str | None = None,
     sampling_transition_from: str | None = None,
+    length_transition_from: str | None = None,
+    length_transition_sha256: str | None = None,
+    stop_after_step: int | None = None,
+    profile_runtime: bool = False,
 ) -> None:
-    if sum(value is not None for value in (resume, initialize_from, warm_start_from, sampling_transition_from)) > 1:
-        raise ValueError("resume, initialize_from, warm_start_from, and sampling_transition_from are mutually exclusive")
+    launch_started = time.perf_counter()
+    if sum(value is not None for value in (resume, initialize_from, warm_start_from, sampling_transition_from, length_transition_from)) > 1:
+        raise ValueError("resume and checkpoint initialization modes are mutually exclusive")
+    if bool(length_transition_from) != bool(length_transition_sha256):
+        raise ValueError("length-transition path and exact SHA256 pin must be supplied together")
+    _execution_limit(config.training.max_steps, stop_after_step)
     validate_confirmation(confirmed_at_utc)
     gpu_snapshot = query_dedicated_gpu(
         confirmed_index=confirmed_gpu_index,
@@ -755,6 +935,11 @@ def launch(
         warm_start_state, initialization = _load_sampling_transition_checkpoint(
             sampling_transition_from, config=config, current_manifest_hashes=manifest_hashes,
         )
+    if length_transition_from is not None:
+        warm_start_state, initialization = _load_length_transition_checkpoint(
+            length_transition_from, expected_sha256=length_transition_sha256,
+            config=config, current_manifest_hashes=manifest_hashes,
+        )
     output_dir = Path(config.training.output_dir)
     if resume is None and output_dir.exists() and any(output_dir.iterdir()):
         raise RuntimeError(
@@ -781,23 +966,69 @@ def launch(
         },
         "conditioning_modules": "precomputed; VAE and T5 are frozen and not loaded into the training process",
         "started_unix": time.time(),
+        "execution": {"stop_after_step": stop_after_step, "configured_max_steps": config.training.max_steps},
     }
     (output_dir / "run_metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
     )
 
-    model, summary = _build_model(config, device)
-    optimizer = _build_optimizer(model, config)
-    factory = _import_factory(config.data.data_factory)
-    loader: Iterable[Mapping[str, Any]] = factory(config=config.data, training=config.training)
+    profiler = OptimizerStepProfiler(
+        device, warmup_steps=5, output_dir=output_dir / "profile_output", gpu_uuid=confirmed_gpu_uuid,
+        enabled=profile_runtime or config.data.num_frames == 97,
+    )
+    try:
+        _execute_training(
+            config=config, device=device, output_dir=output_dir, manifest_hashes=manifest_hashes,
+            metadata=metadata, initialization=initialization, resume=resume,
+            gate_checkpoint=gate_checkpoint, warm_start_state=warm_start_state,
+            stop_after_step=stop_after_step, profiler=profiler, launch_started=launch_started,
+        )
+    except BaseException as exc:
+        profiler.close(error=exc)
+        failure = {
+            "status": "failed", "failure_type": type(exc).__name__, "message": str(exc),
+            "timestamp_unix": time.time(), "execution": metadata["execution"],
+            "profile": profiler.summary(),
+        }
+        (output_dir / "failure.json").write_text(json.dumps(failure, indent=2, sort_keys=True), encoding="utf-8")
+        raise
+    finally:
+        profiler.close()
+
+
+def _execute_training(
+    *, config: ActionTeacherConfig, device: torch.device, output_dir: Path,
+    manifest_hashes: dict[str, str], metadata: dict[str, Any], initialization: Mapping[str, Any],
+    resume: str | None, gate_checkpoint: Mapping[str, Any] | None,
+    warm_start_state: Mapping[str, torch.Tensor] | None, stop_after_step: int | None,
+    profiler: OptimizerStepProfiler, launch_started: float,
+) -> None:
+    with profiler.phase("model_load"):
+        model, summary = _build_model(config, device)
+    with profiler.phase("optimizer_build"):
+        optimizer = _build_optimizer(model, config)
+    with profiler.phase("data_loader"):
+        factory = _import_factory(config.data.data_factory)
+        loader: Iterable[Mapping[str, Any]] = factory(config=config.data, training=config.training)
     start_step = 0
     micro_batches_consumed = 0
+    restore_rng_checkpoint = None
+    profiler.set_phase("restore")
     if resume:
         checkpoint = load_checkpoint(
             resume,
             expected_manifest_hashes=manifest_hashes,
             map_location="cpu",
         )
+        if config.data.num_frames == 97:
+            if (checkpoint.get("format_version"), checkpoint.get("stage")) != (1, "action_teacher_lora_v1"):
+                raise ValueError("97-frame strict resume requires the original action-teacher checkpoint format")
+            if checkpoint.get("config") != config.to_dict():
+                raise ValueError("97-frame strict resume serialized configuration differs")
+            if type(checkpoint.get("step")) is not int or checkpoint["step"] <= 0:
+                raise ValueError("97-frame strict resume optimizer step must be positive")
+            if type(checkpoint.get("micro_batches_consumed")) is not int:
+                raise ValueError("97-frame strict resume requires an explicit integer data position")
         # Preserve a repaired run's original weight lineage across strict resumes.
         initialization = checkpoint.get("initialization", initialization)
         if not isinstance(initialization, Mapping):
@@ -813,8 +1044,7 @@ def launch(
         )
         load_trainable_state_dict(model, checkpoint["trainable_model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
-        torch.set_rng_state(checkpoint["torch_rng_state"])
-        torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state_all"])
+        restore_rng_checkpoint = checkpoint
         start_step = int(checkpoint["step"])
         micro_batches_consumed = int(
             checkpoint.get(
@@ -827,13 +1057,13 @@ def launch(
     elif gate_checkpoint is not None:
         load_trainable_state_dict(model, gate_checkpoint["trainable_model"])
         optimizer.load_state_dict(gate_checkpoint["optimizer"])
-        torch.set_rng_state(gate_checkpoint["torch_rng_state"])
-        torch.cuda.set_rng_state_all(gate_checkpoint["cuda_rng_state_all"])
+        restore_rng_checkpoint = gate_checkpoint
         start_step = GATE_COMPLETION_STEP
         micro_batches_consumed = int(gate_checkpoint["micro_batches_consumed"])
     elif warm_start_state is not None:
         load_trainable_state_dict(model, warm_start_state)
         del warm_start_state
+    execution_limit = _execution_limit(config.training.max_steps, stop_after_step, start_step)
     checkpoint_manager = CheckpointManager(output_dir, keep_last=config.training.keep_last)
 
     print(
@@ -844,18 +1074,33 @@ def launch(
                 "total_parameters": summary.total_parameters,
                 "lora_layers": len(summary.replaced_linear_layers),
                 "resume_step": start_step,
+                "execution_limit": execution_limit,
+                "configured_max_steps": config.training.max_steps,
             },
             sort_keys=True,
         )
     )
     model.zero_grad(set_to_none=True)
-    _, iterator = _iterator_at_micro_batch(loader, micro_batches_consumed)
+    with profiler.phase("iterator_restore"):
+        _, iterator = _iterator_at_micro_batch(loader, micro_batches_consumed)
+        # Loader construction/skipping may consume global RNG. Restore only
+        # after reaching the saved position, before the next real micro-batch.
+        if restore_rng_checkpoint is not None:
+            _restore_rng_state(restore_rng_checkpoint, require_complete=config.data.num_frames == 97)
+            del restore_rng_checkpoint
+    metadata["startup_seconds"] = time.perf_counter() - launch_started
+    metadata["execution"]["resume_step"] = start_step
+    metadata["execution"]["actual_stop_limit"] = execution_limit
+    (output_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     tracker = ThroughputTracker.start()
     accumulated_loss = 0.0
     micro_step = micro_batches_consumed
     global_step = start_step
     last_saved_step = start_step
-    while global_step < config.training.max_steps:
+    while global_step < execution_limit:
+        if micro_step % config.training.gradient_accumulation_steps == 0:
+            profiler.begin_step(global_step + 1)
+        profiler.set_phase("data_wait")
         try:
             batch = next(iterator)
         except StopIteration:
@@ -864,9 +1109,13 @@ def launch(
                 batch = next(iterator)
             except StopIteration as exc:
                 raise RuntimeError("data factory returned an empty iterable") from exc
+        profiler.set_phase("forward")
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             loss = _forward_loss(model, batch, config, device)
             scaled_loss = loss / config.training.gradient_accumulation_steps
+        if not bool(torch.isfinite(loss.detach())):
+            raise FloatingPointError(f"non-finite loss at optimizer step {global_step + 1}")
+        profiler.set_phase("backward")
         scaled_loss.backward()
         accumulated_loss += float(loss.detach())
         micro_step += 1
@@ -875,10 +1124,15 @@ def launch(
             continue
 
         trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
+        profiler.set_phase("gradient_clip")
         grad_norm = torch.nn.utils.clip_grad_norm_(trainable, config.optimizer.max_grad_norm)
+        if not bool(torch.isfinite(grad_norm)):
+            raise FloatingPointError(f"non-finite gradient at optimizer step {global_step + 1}")
+        profiler.set_phase("optimizer_update")
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         global_step += 1
+        step_profile = profiler.end_step(global_step)
         mean_loss = accumulated_loss / config.training.gradient_accumulation_steps
         accumulated_loss = 0.0
         metrics = {
@@ -889,12 +1143,14 @@ def launch(
             "peak_vram_bytes": peak_vram_bytes(device),
             "elapsed_seconds": tracker.elapsed_seconds,
             "timestamp_unix": time.time(),
+            "step_profile": step_profile,
         }
         if global_step % config.training.log_every == 0:
             append_jsonl(output_dir / "metrics.jsonl", metrics)
             print(json.dumps(metrics, sort_keys=True))
         if global_step % config.training.checkpoint_every == 0:
-            checkpoint_manager.save(
+            profiler.begin_checkpoint(global_step)
+            saved_path = checkpoint_manager.save(
                 _checkpoint_payload(
                     model,
                     optimizer,
@@ -908,10 +1164,12 @@ def launch(
                 step=global_step,
                 metric=mean_loss,
             )
+            profiler.end_checkpoint(global_step, checkpoint_path=str(saved_path))
             last_saved_step = global_step
 
     if global_step != last_saved_step:
-        checkpoint_manager.save(
+        profiler.begin_checkpoint(global_step)
+        saved_path = checkpoint_manager.save(
             _checkpoint_payload(
                 model,
                 optimizer,
@@ -925,6 +1183,19 @@ def launch(
             step=global_step,
             metric=mean_loss,
         )
+        profiler.end_checkpoint(global_step, checkpoint_path=str(saved_path))
+    completion = {
+        "status": "completed_execution_segment", "step": global_step,
+        "micro_batches_consumed": micro_step, "configured_max_steps": config.training.max_steps,
+        "execution_stop_after_step": stop_after_step,
+        "stop_reason": "configured_max_steps" if global_step == config.training.max_steps else "execution_step_limit",
+        "checkpoint_path": str(output_dir / "checkpoints" / f"step-{global_step:07d}.pt"),
+        "startup_seconds": metadata["startup_seconds"],
+        "profile": profiler.summary(), "timestamp_unix": time.time(),
+    }
+    (output_dir / "execution_result.json").write_text(json.dumps(completion, indent=2, sort_keys=True), encoding="utf-8")
+    append_jsonl(output_dir / "execution_segments.jsonl", completion)
+    print(json.dumps(completion, sort_keys=True))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -954,6 +1225,10 @@ def main(argv: list[str] | None = None) -> int:
         allocation_profile=args.allocation_profile,
         warm_start_from=args.warm_start_from,
         sampling_transition_from=args.sampling_transition_from,
+        length_transition_from=args.length_transition_from,
+        length_transition_sha256=args.length_transition_sha256,
+        stop_after_step=args.stop_after_step,
+        profile_runtime=args.profile_runtime,
     )
     return 0
 

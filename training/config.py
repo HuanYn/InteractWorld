@@ -113,16 +113,20 @@ class ActionTeacherConfig:
             errors.append("gradient_accumulation_steps must be 8")
         if (self.data.num_frames - 1) % self.data.rgb_frames_per_action_token:
             errors.append("num_frames - 1 must be divisible by 4 (first frame is the clean condition)")
+        if self.data.num_frames not in (49, 97):
+            errors.append("action-teacher num_frames must be exactly 49 or 97")
         expected_latent_frames = 1 + (self.data.num_frames - 1) // self.model.temporal_compression
         expected_latent_height = self.data.height // self.model.spatial_compression
         expected_latent_width = self.data.width // self.model.spatial_compression
         if (expected_latent_frames, self.model.latent_channels, expected_latent_height, expected_latent_width) != (
-            13,
+            1 + (self.data.num_frames - 1) // 4,
             48,
             30,
             52,
         ):
-            errors.append("49x480x832 RGB must map to latent [13,48,30,52]")
+            errors.append("49/97x480x832 RGB must map to latent [13/25,48,30,52]")
+        if self.model.temporal_compression != 4 or self.model.spatial_compression != 16:
+            errors.append("Wan2.2 compression must remain temporal 4 and spatial 16")
         if self.model.num_frame_per_block != 3 or not self.model.independent_first_frame:
             errors.append("teacher profile requires independent first latent frame plus 3-frame blocks")
         if (expected_latent_frames - 1) % self.model.num_frame_per_block:
