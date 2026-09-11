@@ -703,8 +703,26 @@ class WanDiffusionWrapper(torch.nn.Module):
         history_act_context: Optional[torch.Tensor] = None,
         history_y_action: Optional[torch.Tensor] = None,
         noisy_start_frame: int = 0,
+        training_attention_mode: str = "causal",
 
     ) -> torch.Tensor:
+        if training_attention_mode not in ("causal", "bidirectional"):
+            raise ValueError(f"unknown training_attention_mode: {training_attention_mode!r}")
+        if training_attention_mode == "bidirectional":
+            if not self.is_causal:
+                raise ValueError("bidirectional regularization requires the existing causal model")
+            if any(value is not None for value in (
+                clean_x, aug_t, kv_cache, crossattn_cache, history_x, history_y,
+                history_act_context, history_y_action,
+                conditional_dict.get("ref_latents"), conditional_dict.get("ref_mask"),
+            )) or any(value not in (None, 0, False) for value in (
+                current_start, cache_start, updating_cache, noisy_start_frame,
+                classify_mode, concat_time_embeddings, replace_first_timestep_and_noise_latents,
+            )):
+                raise ValueError(
+                    "bidirectional training forbids clean/reference/history, KV/cache and inference options; "
+                    "the loss must supply its already-fixed first-frame latent and timestep"
+                )
         prompt_embeds = conditional_dict["prompt_embeds"]
         act_context = conditional_dict.get("act_context", None)
         act_context_scale = conditional_dict.get("act_context_scale", 1.0)
@@ -718,6 +736,9 @@ class WanDiffusionWrapper(torch.nn.Module):
             if self.is_causal
             else {}
         )
+        if training_attention_mode == "bidirectional":
+            # Do not add even a default keyword to legacy/non-causal callers.
+            reference_kwargs["training_attention_mode"] = training_attention_mode
         # first_frame_latents = conditional_dict.get("first_frame_latents", None)
 
         raw_timestep = timestep

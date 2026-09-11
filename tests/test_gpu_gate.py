@@ -13,16 +13,27 @@ UUID = "GPU-00000000-0000-0000-0000-000000000001"
 def test_fresh_confirmation_and_idle_single_gpu_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     now = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.timezone.utc)
     gpu_gate.validate_confirmation("2026-09-06T11:50:01Z", now=now)
-    outputs = iter([f"0, {UUID}, 623\n", ""])
+    # The public overlay intentionally has a stricter idle-memory threshold.
+    idle_memory = gpu_gate.MAX_IDLE_DISPLAY_MEMORY_MIB - 1
+    outputs = iter([f"0, {UUID}, {idle_memory}\n", ""])
     monkeypatch.setattr(gpu_gate, "_run_nvidia_smi", lambda _args: next(outputs))
     snapshot = gpu_gate.query_dedicated_gpu(
         confirmed_index=0,
         confirmed_uuid=UUID,
         profile=gpu_gate.DEDICATED_PROFILE,
     )
-    assert snapshot.memory_used_mib == 623
+    assert snapshot.memory_used_mib == idle_memory
     assert snapshot.compute_pids == ()
     assert os.environ["CUDA_VISIBLE_DEVICES"] == UUID
+
+
+def test_idle_memory_threshold_is_exclusive(monkeypatch: pytest.MonkeyPatch) -> None:
+    outputs = iter([f"0, {UUID}, {gpu_gate.MAX_IDLE_DISPLAY_MEMORY_MIB}\n", ""])
+    monkeypatch.setattr(gpu_gate, "_run_nvidia_smi", lambda _args: next(outputs))
+    with pytest.raises(gpu_gate.GpuGateError, match="memory.used"):
+        gpu_gate.query_dedicated_gpu(
+            confirmed_index=0, confirmed_uuid=UUID, profile=gpu_gate.DEDICATED_PROFILE,
+        )
 
 
 def test_stale_confirmation_is_rejected() -> None:

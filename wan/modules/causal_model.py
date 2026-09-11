@@ -1574,7 +1574,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         if gradient_checkpointing_func is not None:
             self._gradient_checkpointing_func = gradient_checkpointing_func
 
-    def _checkpoint_train_block(self, block, x, **kwargs):
+    def _checkpoint_train_block(self, block, x, *, _preserve_attention_state=False, **kwargs):
         """Checkpoint a no-KV block without retaining mutable forward state.
 
         Reentrant checkpoint avoids the non-reentrant saved-tensor bookkeeping
@@ -1584,7 +1584,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         mode = getattr(self, "gradient_checkpointing_mode", "non_reentrant")
         if mode not in ("non_reentrant", "reentrant"):
             raise ValueError(f"unknown gradient_checkpointing_mode: {mode!r}")
-        if mode == "non_reentrant":
+        if mode == "non_reentrant" and not _preserve_attention_state:
             return torch.utils.checkpoint.checkpoint(
                 block, x, **kwargs, use_reentrant=False,
             )
@@ -1619,6 +1619,15 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                             delattr(attn, name)
                     else:
                         setattr(attn, name, value)
+
+        if mode == "non_reentrant":
+            # The independent BID branch restores attention flags on return.
+            # Recompute must temporarily recover its own flags, not a later TF
+            # forward's flags. Keep the legacy non-reentrant path unchanged.
+            return torch.utils.checkpoint.checkpoint(
+                custom_forward, x, None, *(kwargs[name] for name in names),
+                use_reentrant=False,
+            )
 
         # A frozen patch embedding may produce x without requires_grad.  A
         # scalar input keeps reentrant autograd active for LoRA/adapter params
@@ -2046,6 +2055,33 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self._block_mask_cache_key = cache_key
         self._block_mask_cache[cache_key] = block_mask
 
+    @staticmethod
+    def _prepare_bidirectional_training_mask(device, valid_token_len: int) -> BlockMask:
+        """Independent noisy-branch full attention; padding sees only itself.
+
+        This is a sequential regularization branch inspired by LingBot-World
+        2.0's MoBA principle, not its packed mask or dynamic-caption mechanism.
+        Mechanism reference: https://arxiv.org/html/2607.07534v1#S3.SS2
+        Build block metadata only, never a quadratic dense *token* mask. The
+        returned mask is intentionally not stored in the causal/KV mask cache.
+        """
+        valid_token_len = int(valid_token_len)
+        if valid_token_len <= 0:
+            raise ValueError("bidirectional training requires nonempty video tokens")
+        block_size = 128
+        padded_len = math.ceil(valid_token_len / block_size) * block_size
+
+        def mask_mod(b, h, q_idx, kv_idx):
+            valid_pair = (q_idx < valid_token_len) & (kv_idx < valid_token_len)
+            return valid_pair | (q_idx == kv_idx)
+
+        visibility = torch.ones(
+            (padded_len // block_size, padded_len // block_size), dtype=torch.bool,
+        )
+        return CausalWanModel._build_block_mask_from_visibility(
+            visibility, mask_mod, padded_len, device, block_size,
+        )
+
     def _apply_control_adapters(self, x,  act_context=None, act_context_scale=1.0):
         """复用action control adapter 逻辑；异常时打印 shape。"""
         try:
@@ -2189,7 +2225,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             ref_latents=None,
             ref_mask=None,
             act_context_scale=1.0,
+            training_attention_mode: str = "causal",
     ):
+        if training_attention_mode != "causal":
+            raise ValueError("training_attention_mode is unavailable through the inference entry")
         if torch.is_grad_enabled():
             return self._forward_train(
                 x=x,
@@ -2348,7 +2387,29 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             ref_mask=None,
             act_context_scale=1.0,
             current_start: int = 0,
+            training_attention_mode: str = "causal",
     ):
+        if training_attention_mode not in ("causal", "bidirectional"):
+            raise ValueError(f"unknown training_attention_mode: {training_attention_mode!r}")
+        bidirectional = training_attention_mode == "bidirectional"
+        if bidirectional and (
+            clean_x is not None or aug_t is not None or ref_latents is not None
+            or ref_mask is not None or current_start != 0
+        ):
+            raise ValueError("bidirectional training forbids clean_x/aug_t, reference tokens and offsets")
+        # Do not leave BID's no-clean flags behind after this call, including
+        # failures. The explicit local mask is captured by checkpoint kwargs.
+        missing = object()
+        saved_attention_state = []
+        if bidirectional:
+            for block in self.blocks:
+                attn = block.self_attn
+                saved_attention_state.append((attn, {
+                    name: getattr(attn, name, missing) for name in (
+                        "_is_teacher_forcing", "_num_ref_tokens", "_query_ref_token_len",
+                        "_ref_num_slots", "_ref_tokens_per_frame", "_ref_grid_sizes",
+                    )
+                }))
         try:
             if self.model_type == 'i2v':
                 assert y is not None
@@ -2366,14 +2427,15 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             absolute_start_frame = int(current_start) // int(frame_seqlen) if frame_seqlen > 0 else 0
             mask_independent_first_frame = bool(self.independent_first_frame) and absolute_start_frame == 0
             ref_token_len = self._estimate_ref_token_len(ref_latents)
-            self._maybe_build_block_mask(
-                device=device,
-                num_frames=num_frames,
-                frame_seqlen=frame_seqlen,
-                is_teacher_forcing=(clean_x is not None),
-                ref_token_len=ref_token_len,
-                independent_first_frame=mask_independent_first_frame,
-            )
+            if not bidirectional:
+                self._maybe_build_block_mask(
+                    device=device,
+                    num_frames=num_frames,
+                    frame_seqlen=frame_seqlen,
+                    is_teacher_forcing=(clean_x is not None),
+                    ref_token_len=ref_token_len,
+                    independent_first_frame=mask_independent_first_frame,
+                )
             if y is not None and self.model_type in ['i2v', 'ti2v']:
                 x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
 
@@ -2392,6 +2454,12 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             assert seq_lens.max() <= seq_len
 
             max_len = seq_lens[0].item()
+            if bidirectional and not bool(torch.all(seq_lens == max_len)):
+                raise ValueError("bidirectional training currently requires equal-length batch items")
+            train_block_mask = (
+                self._prepare_bidirectional_training_mask(device, max_len)
+                if bidirectional else self.block_mask
+            )
             x = torch.cat([
                 torch.cat([u, u.new_zeros(1, max_len - u.size(1), u.size(2))], dim=1)
                 for u in x
@@ -2433,6 +2501,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     ref_token_len=ref_token_len,
                     independent_first_frame=mask_independent_first_frame,
                 )
+                train_block_mask = self.block_mask
 
             if clean_x is not None:
                 if y is not None and self.model_type in ['i2v', 'ti2v']:
@@ -2541,14 +2610,19 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 freqs=self.freqs,
                 context=context,
                 context_lens=context_lens,
-                block_mask=self.block_mask,
+                block_mask=train_block_mask,
                 current_start=current_start,
             )
 
             for block_idx, block in enumerate(self.blocks):
                 try:
                     if torch.is_grad_enabled() and self.gradient_checkpointing:
-                        x = self._checkpoint_train_block(block, x, **kwargs)
+                        if bidirectional:
+                            x = self._checkpoint_train_block(
+                                block, x, _preserve_attention_state=True, **kwargs,
+                            )
+                        else:
+                            x = self._checkpoint_train_block(block, x, **kwargs)
                     else:
                         x = block(x, **kwargs)
                 except Exception as e_block:
@@ -2563,7 +2637,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                         seq_lens=seq_lens,
                         grid_sizes=grid_sizes,
                         context=context,
-                        block_mask=_dbg_block_mask(self.block_mask),
+                        block_mask=_dbg_block_mask(train_block_mask),
                         clean_x_is_not_none=(clean_x is not None),
                     )
                     raise
@@ -2591,6 +2665,14 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 act_context=act_context,
             )
             raise
+        finally:
+            for attn, state in saved_attention_state:
+                for name, value in state.items():
+                    if value is missing:
+                        if hasattr(attn, name):
+                            delattr(attn, name)
+                    else:
+                        setattr(attn, name, value)
 
     # ===== 对外 forward：根据是否传 kv_cache 判断 train/inference =====
 
@@ -2600,6 +2682,25 @@ class CausalWanModel(ModelMixin, ConfigMixin):
     #     else:
     #         return self._forward_train(*args, **kwargs)
     def forward(self, *args, **kwargs):
+        mode = kwargs.get("training_attention_mode", "causal")
+        if mode not in ("causal", "bidirectional"):
+            raise ValueError(f"unknown training_attention_mode: {mode!r}")
+        if mode == "bidirectional":
+            # Validate before the legacy grad-enabled path discards KV kwargs;
+            # invalid BID requests must never silently become training calls.
+            if any(kwargs.get(name) is not None for name in (
+                "kv_cache", "crossattn_cache", "clean_x", "aug_t", "ref_latents",
+                "ref_mask", "history_x", "history_y", "history_act_context", "history_y_action",
+            )) or any(kwargs.get(name) not in (None, 0, False) for name in (
+                "current_start", "cache_start", "updating_cache", "noisy_start_frame",
+            )):
+                raise ValueError("bidirectional training forbids clean/reference/history and KV/cache state")
+            # Permit explicit empty/default routing kwargs without widening the
+            # train signature to accept actual inference state.
+            for name in ("kv_cache", "crossattn_cache", "cache_start", "updating_cache",
+                         "history_x", "history_y", "history_act_context", "history_y_action",
+                         "noisy_start_frame"):
+                kwargs.pop(name, None)
         # 关键：只要当前在建梯度图，就不要走 kv_cache inference path。
         # 不要依赖 self.training，因为蒸馏/采样训练里经常是 eval() + grad enabled。
         if torch.is_grad_enabled() and kwargs.get("kv_cache", None) is not None:

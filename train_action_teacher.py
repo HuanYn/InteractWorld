@@ -56,6 +56,8 @@ DEFAULT_CONFIG = Path(__file__).parent / "configs" / "train" / "action_teacher_l
 GATE_COMPLETION_STEP = 20
 SHARED_DATA_HASH_KEYS = ("dataset_manifest", "feature_index", "feature_receipt")
 PROMPT_CACHE_HASH_KEYS = ("prompt_cache", "prompt_cache_receipt")
+LEGACY_ACTION_FACTORY = "training.data.action_dataset:build_action_teacher_dataloader"
+RESAMPLED_ACTION_FACTORY = "training.data.action_resampled:build_resampled_action_teacher_dataloader"
 
 
 def _canonical_data_contract(value: Any) -> dict[str, Any]:
@@ -105,6 +107,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--warm-start-from",
         default=None,
         help="action-teacher weights only; new optimizer, RNG, step zero, and output directory",
+    )
+    checkpoint.add_argument(
+        "--sampling-transition-from",
+        default=None,
+        help="explicit legacy-to-resampled data-factory transition; identical model/data/optimizer, weights only and fresh step zero",
     )
     parser.add_argument("--confirmed-gpu-index", type=int)
     parser.add_argument("--confirmed-gpu-uuid")
@@ -594,6 +601,106 @@ def _load_warm_start_checkpoint(
     return dict(state), initialization
 
 
+def _load_sampling_transition_checkpoint(
+    path: str | Path,
+    *,
+    config: ActionTeacherConfig,
+    current_manifest_hashes: Mapping[str, str],
+) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    """One allowlisted sampler conversion, not a resume or broad warm start.
+
+    Unlike ordinary warm starts this preserves the complete model, optimizer,
+    prompt and data contracts except the exact factory transition below. Only
+    max_steps/output_dir change in training. Original SHA/configs stay intact.
+    """
+    source = Path(path).resolve()
+    source_sha256 = sha256_file(source)
+    payload = torch.load(source, map_location="cpu", weights_only=False)
+    if sha256_file(source) != source_sha256:
+        raise ValueError("sampling-transition checkpoint changed while loading")
+    if not isinstance(payload, Mapping):
+        raise ValueError("sampling-transition checkpoint must contain a mapping")
+    if payload.get("format_version") != 1 or payload.get("stage") != "action_teacher_lora_v1":
+        raise ValueError("sampling-transition requires an action_teacher_lora_v1 format_version=1 checkpoint")
+    step = payload.get("step")
+    if isinstance(step, bool) or not isinstance(step, int) or step <= 0:
+        raise ValueError("sampling-transition source must have a positive optimizer step")
+    source_config = payload.get("config")
+    source_hashes = payload.get("manifest_hashes")
+    if not isinstance(source_config, Mapping) or not isinstance(source_hashes, Mapping):
+        raise ValueError("sampling-transition requires serialized source configuration and manifest hashes")
+    current_config = config.to_dict()
+    for section in ("model", "optimizer"):
+        if not isinstance(source_config.get(section), Mapping) or source_config[section] != current_config[section]:
+            raise ValueError(f"sampling-transition {section} contract must remain identical")
+    source_data = _canonical_data_contract(source_config.get("data"))
+    current_data = _canonical_data_contract(current_config["data"])
+    if source_data.get("data_factory") != LEGACY_ACTION_FACTORY or current_data.get("data_factory") != RESAMPLED_ACTION_FACTORY:
+        raise ValueError("sampling-transition permits only the exact legacy-to-resampled factory pair")
+    source_data_contract = {key: value for key, value in source_data.items() if key != "data_factory"}
+    current_data_contract = {key: value for key, value in current_data.items() if key != "data_factory"}
+    if source_data_contract != current_data_contract:
+        raise ValueError("sampling-transition data contract differs beyond the factory")
+    for key in SHARED_DATA_HASH_KEYS:
+        expected = current_manifest_hashes.get(key)
+        if not expected or source_hashes.get(key) != expected:
+            raise ValueError(f"sampling-transition {key} mismatch")
+    source_prompt = _prompt_contract(source_data, source_hashes)
+    target_prompt = _prompt_contract(current_data, current_manifest_hashes)
+    if source_prompt != target_prompt:
+        raise ValueError("sampling-transition prompt contract/artifacts must remain identical")
+    source_data_hashes = {key: value for key, value in source_hashes.items() if key != "training_config"}
+    target_data_hashes = {key: value for key, value in current_manifest_hashes.items() if key != "training_config"}
+    if source_data_hashes != target_data_hashes:
+        raise ValueError("sampling-transition cannot change other artifact hashes")
+    if not source_hashes.get("training_config") or not current_manifest_hashes.get("training_config"):
+        raise ValueError("sampling-transition requires both original and target training-config hashes")
+    if source_hashes["training_config"] == current_manifest_hashes["training_config"]:
+        raise ValueError("sampling-transition must record the new configuration hash, not reuse the source hash")
+    source_training = source_config.get("training")
+    if not isinstance(source_training, Mapping):
+        raise ValueError("sampling-transition requires serialized source training configuration")
+    source_training_contract = {key: value for key, value in source_training.items() if key not in ("max_steps", "output_dir")}
+    target_training_contract = {key: value for key, value in current_config["training"].items() if key not in ("max_steps", "output_dir")}
+    if source_training_contract != target_training_contract:
+        raise ValueError("sampling-transition training contract differs beyond max_steps/output_dir")
+    source_output = source_training.get("output_dir")
+    if not isinstance(source_output, str) or Path(source_output).resolve() == Path(config.training.output_dir).resolve():
+        raise ValueError("sampling-transition requires a different fresh output directory")
+    if payload.get("micro_batches_consumed") != step * config.training.gradient_accumulation_steps:
+        raise ValueError("sampling-transition source micro-batch position is inconsistent")
+    state = payload.get("trainable_model")
+    if not isinstance(state, Mapping) or not state:
+        raise ValueError("sampling-transition checkpoint has no trainable model state")
+    if any(not isinstance(name, str) or not torch.is_tensor(value) for name, value in state.items()):
+        raise ValueError("sampling-transition trainable model must map parameter names to tensors")
+    initialization = {
+        "mode": "sampling_transition_weights_only",
+        "path": str(source), "sha256": source_sha256,
+        "source_stage": payload["stage"], "source_step": step,
+        "source_config": dict(source_config),
+        "source_manifest_hashes": dict(source_hashes),
+        "target_manifest_hashes": dict(current_manifest_hashes),
+        "source_initialization": payload.get("initialization"),
+        "sampling_transition": {
+            "version": 1, "source_factory": LEGACY_ACTION_FACTORY,
+            "target_factory": RESAMPLED_ACTION_FACTORY,
+            "target_sampling_namespace": "action_resampled_absolute_v1",
+            "target_virtual_sample_count": config.training.max_steps * config.training.gradient_accumulation_steps * config.training.micro_batch_size,
+            "target_absolute_sample_start": 0,
+            "changed_data_fields": ["data_factory"],
+            "model_contract_unchanged": True, "optimizer_config_unchanged": True,
+            "prompt_contract_unchanged": True,
+            "source_micro_batches_consumed": payload["micro_batches_consumed"],
+            "source_position_restored": False,
+        },
+        "prompt_transition": {"changed": False, "source": source_prompt, "target": target_prompt},
+        "optimizer_restored": False, "rng_restored": False,
+        "start_step": 0, "micro_batches_consumed": 0, "seed": config.training.seed,
+    }
+    return dict(state), initialization
+
+
 def launch(
     config: ActionTeacherConfig,
     config_path: str | Path,
@@ -605,9 +712,10 @@ def launch(
     confirmed_at_utc: str,
     allocation_profile: str,
     warm_start_from: str | None = None,
+    sampling_transition_from: str | None = None,
 ) -> None:
-    if sum(value is not None for value in (resume, initialize_from, warm_start_from)) > 1:
-        raise ValueError("resume, initialize_from, and warm_start_from are mutually exclusive")
+    if sum(value is not None for value in (resume, initialize_from, warm_start_from, sampling_transition_from)) > 1:
+        raise ValueError("resume, initialize_from, warm_start_from, and sampling_transition_from are mutually exclusive")
     validate_confirmation(confirmed_at_utc)
     gpu_snapshot = query_dedicated_gpu(
         confirmed_index=confirmed_gpu_index,
@@ -642,6 +750,10 @@ def launch(
     if warm_start_from is not None:
         warm_start_state, initialization = _load_warm_start_checkpoint(
             warm_start_from, config=config, current_manifest_hashes=manifest_hashes,
+        )
+    if sampling_transition_from is not None:
+        warm_start_state, initialization = _load_sampling_transition_checkpoint(
+            sampling_transition_from, config=config, current_manifest_hashes=manifest_hashes,
         )
     output_dir = Path(config.training.output_dir)
     if resume is None and output_dir.exists() and any(output_dir.iterdir()):
@@ -841,6 +953,7 @@ def main(argv: list[str] | None = None) -> int:
         confirmed_at_utc=args.confirmed_at_utc,
         allocation_profile=args.allocation_profile,
         warm_start_from=args.warm_start_from,
+        sampling_transition_from=args.sampling_transition_from,
     )
     return 0
 

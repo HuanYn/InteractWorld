@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "c9058b69e0577c622c26e32a288804d7e73b930c",
+  "source_revision": "988afe092852a0d54ab5d7c41298be16c0c3dea2",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,8 +30,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "21eedf1a44d4d31feb31be3d67f8f26195e8a5da3993685a5936f04e192e9348",
-      "bytes": 16093,
+      "sha256": "0344a3ec4a98a4c3753690bbe67fe132a16517f444b59c965c8388d68e21da6d",
+      "bytes": 16674,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -74,6 +74,11 @@
       "bytes": 1169,
       "source_path": "configs/train/action_teacher_lora_v1.yaml"
     },
+    "configs/train/causal_moba_example.yaml": {
+      "sha256": "988174f78f52a3874cfd34a1b62d681e81ac8295466e1e78e40fdc7347be8af3",
+      "bytes": 1202,
+      "source_path": "configs/train/causal_moba_example.yaml"
+    },
     "configs/train/causal_teacher_forcing_5090_week.yaml": {
       "sha256": "c7a9b67f9b0a16224b48e3edc052d27ae00d19e4c9e9a4e540141fd3a121720c",
       "bytes": 1612,
@@ -93,6 +98,11 @@
       "sha256": "c54c922879d3ab88a944b9c70a4594a5133bc3995c4c78318825a4c1e19cccb7",
       "bytes": 2332,
       "source_path": "configs/train/longforcing_lite_v1.yaml"
+    },
+    "docs/moba-inspired.md": {
+      "sha256": "adf9f1b108a5c716a289278a7c9516faf836670fb93be1dd05007a402676c9c1",
+      "bytes": 2676,
+      "source_path": "public_repro/docs/moba-inspired.md"
     },
     "pipeline/__init__.py": {
       "sha256": "03cb4c711cdc92cd01e0a8b3ef12da0efd3fd97b6d06d403c6c1a238acbca0f1",
@@ -194,6 +204,11 @@
       "bytes": 21714,
       "source_path": "tests/test_action_dataset.py"
     },
+    "tests/test_action_resampled.py": {
+      "sha256": "debc028d634a5fc9677349625f11f05b756990d1160a6e25b087b59bbb5242fc",
+      "bytes": 10656,
+      "source_path": "tests/test_action_resampled.py"
+    },
     "tests/test_action_scale_config.py": {
       "sha256": "983e1a735eeb2acb1a1e406f50c058dfb94dea4865f32d01fc0d248fff54372e",
       "bytes": 934,
@@ -209,10 +224,20 @@
       "bytes": 4276,
       "source_path": "tests/test_cache_abot_long_features.py"
     },
+    "tests/test_causal_bidirectional_training.py": {
+      "sha256": "32a0658c4f6286a3e7cb9197cdecd08d883931093c45cfb0d8941510e456a52d",
+      "bytes": 16417,
+      "source_path": "tests/test_causal_bidirectional_training.py"
+    },
     "tests/test_causal_flow_solver.py": {
       "sha256": "a8a8b3ec53e8cc3cbf5780515c8d579d0056fe9855afaf6f7976666bd875b67f",
       "bytes": 7465,
       "source_path": "tests/test_causal_flow_solver.py"
+    },
+    "tests/test_causal_moba.py": {
+      "sha256": "9b3d3cf48b7f416a46857c9e0dc27bb71f67cf0909727db566511e87432e0034",
+      "bytes": 11100,
+      "source_path": "tests/test_causal_moba.py"
     },
     "tests/test_causal_reentrant_checkpoint.py": {
       "sha256": "8509eca900aaf74e43cfa814f8a5391ce2cbecf245b5f10b3cdbeb7da7667889",
@@ -250,8 +275,8 @@
       "source_path": "tests/test_demo_service.py"
     },
     "tests/test_gpu_gate.py": {
-      "sha256": "53aba785f5760e75ab7bfca8b0ecc6435ec402b27ff60960ca79ff2de3c2574e",
-      "bytes": 2123,
+      "sha256": "d854ca962e1a328b728b3b0006daa5ca9b23ef76d86a256a711781c92c5e03a8",
+      "bytes": 2732,
       "source_path": "tests/test_gpu_gate.py"
     },
     "tests/test_input_header.py": {
@@ -284,6 +309,11 @@
       "bytes": 4325,
       "source_path": "tests/test_rollout15s.py"
     },
+    "tests/test_sampling_transition.py": {
+      "sha256": "1ac6e40758a79597ea420ef0ba6d742ccfff507113701a1507f0e535f217a0fd",
+      "bytes": 11094,
+      "source_path": "tests/test_sampling_transition.py"
+    },
     "tests/test_scene_static_prompts.py": {
       "sha256": "b19a1c28f82856a828e37efcc2cc3c9ecee6b09cd77e6b26ff73dedb930fcf96",
       "bytes": 1037,
@@ -300,9 +330,14 @@
       "source_path": "tests/test_wan_longforcing_adapter.py"
     },
     "train_action_teacher.py": {
-      "sha256": "35265faf4d93609e607349f9d662c731a62dbcf19b865c7ba6425a4f0d214742",
-      "bytes": 36288,
+      "sha256": "6ee91ef1f14a397e6c91ef8efe273e2843411317e43240d11561930c484a60f7",
+      "bytes": 43924,
       "source_path": "train_action_teacher.py"
+    },
+    "train_causal_moba.py": {
+      "sha256": "52472d422868daf5b3d482a9a6372be534ad51aec8186b74edf639ecb845f08a",
+      "bytes": 13102,
+      "source_path": "train_causal_moba.py"
     },
     "train_causal_teacher_forcing.py": {
       "sha256": "9a1f6ea4b10160fbe1f1cf90825f46b7745b4a11999765fef65254f0c1420fa3",
@@ -313,6 +348,11 @@
       "sha256": "c9186d0d48fca330453f4674cc384e90fa2323a5fb5d8b3a5f5396a6de239c40",
       "bytes": 24524,
       "source_path": "train_longforcing_lite.py"
+    },
+    "training/causal_moba.py": {
+      "sha256": "c108912fb62b054f4ee150bc941a43aa4adcfb89158b6ea3b667680709da5cf3",
+      "bytes": 8317,
+      "source_path": "training/causal_moba.py"
     },
     "training/causal_tf.py": {
       "sha256": "484e4c1e07c44e20374f610433f91e6160a6661929cd8a50f1d5a5abffd65899",
@@ -343,6 +383,11 @@
       "sha256": "ecac5578741efb864669f84f0f6ba64c143c6585c11b9ebff221624920fa29cf",
       "bytes": 19328,
       "source_path": "training/data/action_dataset.py"
+    },
+    "training/data/action_resampled.py": {
+      "sha256": "87312609dc7b7faafcaa044d75b19a0bb2b26636331848cdf1276591c374c8f2",
+      "bytes": 6970,
+      "source_path": "training/data/action_resampled.py"
     },
     "training/data/action_schema.py": {
       "sha256": "f9e8b5e6918454a5513c2c4802efdd9b82bbef1fbb6c33b2328571d1579a9e75",
@@ -490,8 +535,8 @@
       "source_path": "utils/scheduler.py"
     },
     "utils/wan_wrapper.py": {
-      "sha256": "3102bcc28d78d16e71ab8654180600eaf4bf118f875c5ba0cba7011c03fc2a96",
-      "bytes": 37414,
+      "sha256": "150232210ba9ed43a2060d727a0d4192000ab9db6c7406078de4279c73f1d248",
+      "bytes": 38823,
       "source_path": "utils/wan_wrapper.py"
     },
     "wan/__init__.py": {
@@ -510,8 +555,8 @@
       "source_path": "wan/modules/attention.py"
     },
     "wan/modules/causal_model.py": {
-      "sha256": "b9dcfc6303328986f3b45b292713ac4fbc50d3e186561f44a6fb98755735cb60",
-      "bytes": 115011,
+      "sha256": "029cce597f2bb6d7142dea50ab9847be95c7a834aa20c72efd1eaa299c8d6e30",
+      "bytes": 120645,
       "source_path": "wan/modules/causal_model.py"
     },
     "wan/modules/compiled_flex.py": {
@@ -585,5 +630,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1258962
+  "source_bytes": 1356365
 }

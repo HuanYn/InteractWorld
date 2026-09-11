@@ -1,0 +1,28 @@
+# Unvalidated MoBA-inspired sequential BID regularization, not official MoBA/CD/DMD.
+# Replace /project paths with your project data volume; no download is performed.
+# Paired control: same Action parent, data, noise, LR and budget; change only
+# bidirectional_weight to 0.0 and use a distinct fresh output directory.
+model:
+  base_model_path: /project/models/Wan2.2-TI2V-5B@921dbaf3f1674a56f47e83fb80a34bac8a8f203e
+  action_scale: 0.03
+  lora_dropout: 0.0
+data:
+  manifest_path: /project/data/manifests/train.jsonl
+  feature_index_path: /project/data/features/train.features.jsonl
+  feature_receipt_path: /project/data/features/train.features.jsonl.receipt.json
+  prompt_cache_path: /project/data/features/scene-static-prompts.pt
+  data_factory: training.data.action_resampled:build_resampled_action_teacher_dataloader
+lineage:
+  checkpoint_path: /project/runs/action-teacher/checkpoints/best.pt
+  checkpoint_sha256: null
+  expected_stage: action_teacher_lora_v1
+optimizer:
+  adapter_lr: 0.00002
+  lora_lr: 0.000002
+training:
+  max_steps: 40
+  checkpoint_every: 20
+  output_dir: /project/runs/causal-moba-candidate
+regularization:
+  method: moba_inspired_sequential_bid_v1
+  bidirectional_weight: 0.1

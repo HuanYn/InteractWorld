@@ -47,7 +47,14 @@ Action/Causal 父模型的文本条件及动作尺度；旧版未声明缓存的
 Demo 素材从同一缓存收据读取准确文字，并绑定来源 episode；评测拒绝缺失或不一致的
 文本缓存/收据/文字。以上是 CPU 已覆盖的接口修复，尚未完成新下游 GPU 训练和画质验证。
 R005 是仅将 LoRA 学习率从 0 调至 2e-6 的候选实验，尚未通过画质、控制或 15 秒稳定性验证。
-MoBA、一致性蒸馏 CD 和完整 DMD 尚未实现；不能将这次条件修复描述为已完成这些方法。
+新增独立的 [MoBA 启发双向辅助训练](docs/moba-inspired.md)：共享因果骨干，顺序计算
+TF 与双向 flow loss。它是实验性简化实现，不是官方 packed MoBA；GPU 训练、显存和
+15秒画质收益尚未验证。一致性蒸馏 CD 和完整 DMD 仍未实现。
+
+Action 可选重采样工厂 `training.data.action_resampled:build_resampled_action_teacher_dataloader`
+按绝对样本序号重采样窗口、噪声和时间步，避免旧循环反复使用同一条件。
+从旧采样 checkpoint 切换时使用 `--sampling-transition-from`，严格核对来源，
+只加载权重并新建 optimizer/RNG/step0；不要将采样切换冒充原运行的严格 resume。
 
 ## CPU 快速检查
 
