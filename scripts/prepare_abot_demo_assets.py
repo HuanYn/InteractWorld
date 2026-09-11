@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare three fixed held-out, real-action 15-second scenes on CPU only."""
+"""Prepare one to three fixed held-out, real-action 15-second scenes on CPU only."""
 
 from __future__ import annotations
 
@@ -110,7 +110,9 @@ def prompt_for_episode(record: dict, caption: object, receipt: dict | None) -> s
 
 
 def prepare(manifest: Path, output: Path, template: Path, *, training_config: Path | None = None,
-            stage: str = "causal", project_root: Path | None = None) -> dict:
+            stage: str = "causal", project_root: Path | None = None, scene_count: int = 3) -> dict:
+    if type(scene_count) is not int or not 1 <= scene_count <= 3:
+        raise ValueError("scene_count must be an integer from 1 to 3")
     if output.exists():
         raise FileExistsError(f"refusing to overwrite {output}")
     project = resolve_project_root(
@@ -147,14 +149,14 @@ def prepare(manifest: Path, output: Path, template: Path, *, training_config: Pa
             selected.append((record, sequence, start, segments,
                              prompt_for_episode(record, bundle.caption, prompt_receipt)))
             break
-        if len(selected) == 3:
+        if len(selected) == scene_count:
             break
-    if len(selected) != 3:
-        raise ValueError("fewer than three eligible held-out scenes with nontrivial actions")
+    if len(selected) != scene_count:
+        raise ValueError(f"fewer than {scene_count} eligible held-out scenes with nontrivial actions")
 
     output.mkdir(parents=True)
     config = yaml.safe_load(template.read_text())
-    config["run_id"] = f"abot-week-{stage}-dev3"
+    config["run_id"] = f"abot-week-{stage}-dev{scene_count}"
     config["output_root"] = str(project / "eval" / "rollout15s")
     config["lineage"] = lineage
     config["scenes"] = []
@@ -206,10 +208,12 @@ def main():
     parser.add_argument("--template", type=Path, default=ROOT / "configs/eval/rollout15s_v1.yaml")
     parser.add_argument("--training-config", type=Path, help="Exact causal/LongForcing training YAML used for this checkpoint")
     parser.add_argument("--stage", choices=("causal", "longforcing"), default="causal")
+    parser.add_argument("--scene-count", type=int, choices=(1, 2, 3), default=3)
     parser.add_argument("--project-root", type=Path, help="Data root (or set INTERACTWORLD_ROOT)")
     args = parser.parse_args()
     print(json.dumps(prepare(args.manifest.resolve(), args.output.resolve(), args.template.resolve(),
-                             training_config=args.training_config, stage=args.stage, project_root=args.project_root), indent=2))
+                             training_config=args.training_config, stage=args.stage, project_root=args.project_root,
+                             scene_count=args.scene_count), indent=2))
 
 
 if __name__ == "__main__":

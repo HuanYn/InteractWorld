@@ -123,8 +123,8 @@ class Rollout15sConfig:
             errors.append("v1 timing must be 20x3x4 future + 1 initial = 241 RGB frames at 16 fps")
         if self.width <= 0 or self.height <= 0:
             errors.append("width and height must be positive")
-        if len(self.scenes) != 3 or len({scene.scene_id for scene in self.scenes}) != 3:
-            errors.append("v1 requires exactly three uniquely named scenes")
+        if not 1 <= len(self.scenes) <= 3 or len({scene.scene_id for scene in self.scenes}) != len(self.scenes):
+            errors.append("v1 requires one to three uniquely named scenes")
         if not self.run_id or Path(self.run_id).name != self.run_id:
             errors.append("run_id must be one safe path component")
         if ":" not in self.adapter_factory:

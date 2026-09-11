@@ -164,15 +164,19 @@ def test_config_rejects_half_pair_and_missing_source_identity(tmp_path):
         replace(config, scenes=(replace(config.scenes[0], source_episode_id=None), *config.scenes[1:])).validate()
 
 
-def test_prepare_reads_exact_static_sidecar_text_and_serializes_source_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("scene_count", [1, 2, 3])
+def test_prepare_reads_exact_static_sidecar_text_and_serializes_source_identity(tmp_path, monkeypatch, scene_count):
     config, _, records, expected, training_path = _fixture(tmp_path)
     monkeypatch.setattr(assets, "decode_video_window", lambda *args, **kwargs: (torch.zeros(3, 241, 2, 2, dtype=torch.uint8), "unit-test-media"))
     result = assets.prepare(Path(config.lineage.artifact_paths["dataset_manifest"]), tmp_path / "demo", TEMPLATE,
-                            training_config=training_path, stage="longforcing", project_root=tmp_path)
+                            training_config=training_path, stage="longforcing", project_root=tmp_path,
+                            scene_count=scene_count)
     output = load_rollout_config(result["config"])
+    assert len(output.scenes) == len(result["scenes"]) == scene_count
+    assert output.run_id.endswith(f"dev{scene_count}")
     assert result["prompt_policy"] == "scene_static_only_v1"
     assert set(result["prompt_artifacts"]) == {"prompt_cache", "prompt_cache_receipt"}
-    for scene, record, emitted in zip(output.scenes, records, result["scenes"], strict=True):
+    for scene, record, emitted in zip(output.scenes, records[:scene_count], result["scenes"], strict=True):
         binding = expected["episodes"][record["episode_id"]]
         assert scene.source_episode_id == record["episode_id"]
         assert scene.prompt == binding["prompt"]

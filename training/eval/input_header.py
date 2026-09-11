@@ -20,6 +20,9 @@ ACTION_KEYS = ("W", "A", "S", "D", "I", "J", "K", "L")
 BACKGROUND = (16, 21, 28)
 KEY_ACTIVE = (51, 174, 130)
 KEY_IDLE = (43, 53, 66)
+ARROW_LABELS = {"I": "↑", "J": "←", "K": "↓", "L": "→"}
+HUD_BACKGROUND_ALPHA = 170
+HUD_KEY_ALPHA = 220
 
 
 def _hash_file(path: Path) -> str:
@@ -96,14 +99,20 @@ def _load_font(text: str, size: int = 14):
 
 
 class InputHeaderRenderer:
-    """Render a 48px display strip and concatenate the untouched decoded body."""
+    """Keep the 48px photo/prompt strip; overlay two display-only action HUDs."""
 
-    def __init__(self, *, initial_frame: np.ndarray, prompt: str, actions: np.ndarray, seed: int, fps: int = 16):
+    def __init__(self, *, initial_frame: np.ndarray, prompt: str, actions: np.ndarray, seed: int,
+                 fps: int = 16, layout: str = "split_hud"):
         if not isinstance(initial_frame, np.ndarray) or initial_frame.dtype != np.uint8 or initial_frame.ndim != 3 or initial_frame.shape[2] != 3:
             raise ValueError("initial_frame must be uint8 [H,W,3]")
         self.height, self.width = initial_frame.shape[:2]
         if self.width < 400 or self.height <= 0:
             raise ValueError("input-header layout needs width >=400 and positive height")
+        if layout not in ("split_hud", "inline"):
+            raise ValueError("layout must be split_hud or inline")
+        if layout == "split_hud" and self.height < 8:
+            raise ValueError("split HUD layout needs source height >=8")
+        self.layout = layout
         if not isinstance(actions, np.ndarray) or actions.dtype != np.float32 or actions.ndim != 2 or actions.shape[1] != 8:
             raise ValueError("actions must be float32 [future_frames,8]")
         if not np.isfinite(actions).all() or not np.logical_or(actions == 0, actions == 1).all():
@@ -135,6 +144,24 @@ class InputHeaderRenderer:
             key: (self.keys_left + index * 24, 23, self.keys_left + index * 24 + 20, 44)
             for index, key in enumerate(ACTION_KEYS)
         }
+        self.hud_regions = {}
+        if self.layout == "split_hud":
+            # Coordinates are inclusive PIL boxes in the final header+body image.
+            # Small CPU fixtures scale down; normal 480px videos use 30px keys.
+            margin = min(16, max(1, self.height // 16))
+            padding = min(8, max(1, self.height // 16))
+            gap = min(5, max(1, self.height // 32))
+            size = min(30, (self.height - 2 * margin - 2 * padding - gap) // 2)
+            panel_width, panel_height = 3 * size + 2 * gap + 2 * padding, 2 * size + gap + 2 * padding
+            top = HEADER_HEIGHT + self.height - margin - panel_height
+            self.key_boxes = {}
+            for group, left, keys in (("wasd", margin, ("W", "A", "S", "D")),
+                                      ("arrows", self.width - margin - panel_width, ("I", "J", "K", "L"))):
+                self.hud_regions[group] = (left, top, left + panel_width - 1, top + panel_height - 1)
+                for key, (column, row) in zip(keys, ((1, 0), (0, 1), (1, 1), (2, 1))):
+                    x, y = left + padding + column * (size + gap), top + padding + row * (size + gap)
+                    self.key_boxes[key] = (x, y, x + size - 1, y + size - 1)
+            self.hud_font, _ = _load_font("WASD", max(1, min(18, size - 4)))
         bbox = self.font.getbbox(display_prompt)
         text_width = max(1, bbox[2] - min(0, bbox[0]))
         self.prompt_strip = Image.new("RGB", (max(text_width + 2, self.prompt_width), 26), BACKGROUND)
@@ -163,13 +190,43 @@ class InputHeaderRenderer:
         header = self.base.copy()
         offset = round(self.scroll_travel * frame_index / max(1, self.frames - 1))
         header.paste(self.prompt_strip.crop((offset, 0, offset + self.prompt_width, 26)), (self.prompt_left, 19))
-        draw = ImageDraw.Draw(header)
-        draw.text((self.keys_left, 3), "INPUT " + state["label"], font=self.label_font, fill=(155, 170, 188))
+        if self.layout == "inline":
+            draw = ImageDraw.Draw(header)
+            draw.text((self.keys_left, 3), "INPUT " + state["label"], font=self.label_font, fill=(155, 170, 188))
+            for key, box in self.key_boxes.items():
+                active = key in state["keys"]
+                draw.rounded_rectangle(box, radius=3, fill=KEY_ACTIVE if active else KEY_IDLE)
+                draw.text((box[0] + 4, box[1] + 1), key, font=self.font, fill=(255, 255, 255) if active else (155, 170, 188))
+            return np.concatenate((np.asarray(header), frame), axis=0)
+        canvas = Image.fromarray(np.concatenate((np.asarray(header), frame), axis=0)).convert("RGBA")
+        overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        for region in self.hud_regions.values():
+            draw.rounded_rectangle(region, radius=8, fill=(*BACKGROUND, HUD_BACKGROUND_ALPHA))
         for key, box in self.key_boxes.items():
             active = key in state["keys"]
-            draw.rounded_rectangle(box, radius=3, fill=KEY_ACTIVE if active else KEY_IDLE)
-            draw.text((box[0] + 4, box[1] + 1), key, font=self.font, fill=(255, 255, 255) if active else (155, 170, 188))
-        return np.concatenate((np.asarray(header), frame), axis=0)
+            draw.rounded_rectangle(box, radius=3, fill=(*(KEY_ACTIVE if active else KEY_IDLE), HUD_KEY_ALPHA))
+            color = (255, 255, 255, 255) if active else (175, 189, 205, 255)
+            if key in ARROW_LABELS:
+                self._draw_arrow(draw, key, box, color)
+            else:
+                bounds = self.hud_font.getbbox(key)
+                x = (box[0] + box[2] - (bounds[2] - bounds[0])) / 2 - bounds[0]
+                y = (box[1] + box[3] - (bounds[3] - bounds[1])) / 2 - bounds[1]
+                draw.text((round(x), round(y)), key, font=self.hud_font, fill=color)
+        return np.asarray(Image.alpha_composite(canvas, overlay).convert("RGB"))
+
+    @staticmethod
+    def _draw_arrow(draw, key, box, color):
+        """Seven-point vector arrow: no Unicode arrow font dependency."""
+        cx, cy = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+        radius = max(1, (box[2] - box[0]) // 4)
+        shaft = max(1, radius // 3)
+        points = ((0, -radius), (-radius, 0), (-shaft, 0), (-shaft, radius),
+                  (shaft, radius), (shaft, 0), (radius, 0))
+        rotate = {"I": lambda x, y: (x, y), "J": lambda x, y: (y, -x),
+                  "K": lambda x, y: (-x, -y), "L": lambda x, y: (-y, x)}[key]
+        draw.polygon([(cx + dx, cy + dy) for dx, dy in (rotate(x, y) for x, y in points)], fill=color)
 
     def metadata(self) -> dict:
         return {
@@ -184,7 +241,14 @@ class InputHeaderRenderer:
             "prompt_scroll_pixels": self.scroll_travel,
             "prompt_scroll_pixels_per_second": self.scroll_travel * self.fps / max(1, self.frames - 1),
             "prompt_full_text_in_metadata": True,
-            "body_layout": "unscaled_unmodified_before_video_encoding",
+            "key_layout": self.layout,
+            "key_display_labels": {key: ARROW_LABELS.get(key, key) if self.layout == "split_hud" else key for key in ACTION_KEYS},
+            "key_boxes": {key: list(box) for key, box in self.key_boxes.items()},
+            "hud_regions": {name: list(box) for name, box in self.hud_regions.items()},
+            "display_box_coordinates": "output_xyxy_inclusive_including_header",
+            "body_layout": ("unscaled_only_two_hud_regions_overlaid_before_video_encoding"
+                            if self.layout == "split_hud" else "unscaled_unmodified_before_video_encoding"),
+            "body_pixels_outside_hud_regions_unchanged_before_video_encoding": True,
             "display_only_not_model_conditioning": True,
         }
 
@@ -233,11 +297,12 @@ def _read_frame(stream, length: int) -> bytes:
 
 
 def annotate_video(source: Path, output: Path, *, initial_frame: np.ndarray, prompt: str,
-                   actions: np.ndarray, seed: int, fps: int = 16) -> dict:
+                   actions: np.ndarray, seed: int, fps: int = 16, layout: str = "split_hud") -> dict:
     """Create a separate MP4; never overwrite the source or an existing output.
 
-    RGB body pixels are unchanged before re-encoding. H.264/YUV420 compression
-    can introduce ordinary codec differences; this is not a lossless remux.
+    The default changes body pixels only in two bottom HUD regions before
+    re-encoding; legacy inline changes none. H.264/YUV420 compression can add
+    codec differences elsewhere; this is not a lossless remux.
     """
     source, output = Path(source), Path(output)
     if output.exists() or output.is_symlink():
@@ -245,7 +310,7 @@ def annotate_video(source: Path, output: Path, *, initial_frame: np.ndarray, pro
     source, output = source.resolve(strict=True), output.resolve()
     if not source.is_file() or output.suffix.lower() != ".mp4":
         raise ValueError("source must be a video file and output must be a new MP4")
-    renderer = InputHeaderRenderer(initial_frame=initial_frame, prompt=prompt, actions=actions, seed=seed, fps=fps)
+    renderer = InputHeaderRenderer(initial_frame=initial_frame, prompt=prompt, actions=actions, seed=seed, fps=fps, layout=layout)
     if renderer.width % 2 or renderer.height % 2:
         raise ValueError("YUV420 display output requires even source width and height")
     probe = _probe_video(source)

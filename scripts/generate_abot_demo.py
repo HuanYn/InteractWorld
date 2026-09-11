@@ -62,6 +62,8 @@ def main():
     from training.paths import project_root
 
     config = load_rollout_config(args.config)
+    if args.scene_count > len(config.scenes):
+        raise ValueError(f"requested {args.scene_count} scenes but configuration contains only {len(config.scenes)}")
     if not args.launch:
         print(json.dumps({"mode": "cpu_plan", "scenes": args.scene_count, "seconds_per_scene": 15,
                           "checkpoint": config.lineage.checkpoint_path, "output": str(args.output)}, indent=2))

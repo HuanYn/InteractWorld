@@ -9,7 +9,8 @@ import numpy as np
 import pytest
 
 from training.eval.input_header import (
-    HEADER_HEIGHT, KEY_ACTIVE, KEY_IDLE, InputHeaderRenderer, _load_font, annotate_video,
+    ARROW_LABELS, HEADER_HEIGHT, HUD_KEY_ALPHA, KEY_ACTIVE, KEY_IDLE,
+    InputHeaderRenderer, _load_font, annotate_video,
 )
 
 
@@ -21,9 +22,9 @@ def _inputs():
     return frame, actions
 
 
-def test_header_preserves_body_and_action_frame_offset():
+def test_legacy_inline_header_preserves_body_and_action_frame_offset():
     frame, actions = _inputs()
-    renderer = InputHeaderRenderer(initial_frame=frame, prompt="Walk forward", actions=actions, seed=7)
+    renderer = InputHeaderRenderer(initial_frame=frame, prompt="Walk forward", actions=actions, seed=7, layout="inline")
     for index, expected in enumerate(((), ("W",), ("A",), ())):
         rendered = renderer.render(frame, index)
         assert rendered.shape == (32 + HEADER_HEIGHT, 832, 3)
@@ -33,6 +34,68 @@ def test_header_preserves_body_and_action_frame_offset():
             x, y, _, _ = renderer.key_boxes[key]
             np.testing.assert_array_equal(rendered[y + 3, x + 3], KEY_ACTIVE if key in expected else KEY_IDLE)
     assert renderer.metadata()["future_action_frame_offset"] == 1
+
+
+def test_split_hud_maps_all_real_action_keys_and_changes_only_two_regions():
+    frame = np.random.default_rng(41).integers(0, 256, (480, 832, 3), dtype=np.uint8)
+    original = frame.copy()
+    actions = np.eye(8, dtype=np.float32)
+    renderer = InputHeaderRenderer(initial_frame=frame, prompt="A static mountain scene.", actions=actions, seed=42)
+    assert renderer.layout == "split_hud"
+    boxes = renderer.key_boxes
+    assert boxes["W"][0] == boxes["S"][0] and boxes["W"][1] < boxes["S"][1]
+    assert boxes["A"][0] < boxes["S"][0] < boxes["D"][0]
+    assert boxes["I"][0] == boxes["K"][0] and boxes["I"][1] < boxes["K"][1]
+    assert boxes["J"][0] < boxes["K"][0] < boxes["L"][0]
+    outside = np.ones(frame.shape[:2], dtype=bool)
+    for x1, y1, x2, y2 in renderer.hud_regions.values():
+        assert 0 <= x1 <= x2 < 832 and HEADER_HEIGHT <= y1 <= y2 < 528
+        outside[y1 - HEADER_HEIGHT:y2 - HEADER_HEIGHT + 1, x1:x2 + 1] = False
+    for index in range(9):
+        rendered = renderer.render(frame, index)
+        expected = () if index == 0 else (tuple(boxes)[index - 1],)
+        assert renderer.input_state(index)["keys"] == expected
+        np.testing.assert_array_equal(rendered[HEADER_HEIGHT:][outside], frame[outside])
+        for key, (x, y, _, _) in boxes.items():
+            # The corner sample is inside the key fill but outside its symbol.
+            color = np.array(KEY_ACTIVE if key in expected else KEY_IDLE)
+            source = frame[y + 3 - HEADER_HEIGHT, x + 3].astype(int)
+            blended = (color * HUD_KEY_ALPHA + source * (255 - HUD_KEY_ALPHA) + 127) // 255
+            np.testing.assert_array_equal(rendered[y + 3, x + 3], blended)
+    np.testing.assert_array_equal(frame, original)
+    np.testing.assert_array_equal(actions, np.eye(8, dtype=np.float32))
+    metadata = renderer.metadata()
+    assert metadata["key_display_labels"] == {"W": "W", "A": "A", "S": "S", "D": "D", **ARROW_LABELS}
+    assert metadata["action_keys"] == ["W", "A", "S", "D", "I", "J", "K", "L"]
+    assert metadata["body_layout"] == "unscaled_only_two_hud_regions_overlaid_before_video_encoding"
+    assert metadata["body_pixels_outside_hud_regions_unchanged_before_video_encoding"]
+    assert metadata["actions_sha256"] == hashlib.sha256(actions.tobytes()).hexdigest()
+
+
+def test_split_hud_keeps_original_top_photo_prompt_seed_and_scroll_exact():
+    frame, _ = _inputs()
+    actions = np.ones((240, 8), dtype=np.float32)
+    inputs = dict(initial_frame=frame, prompt="A quiet rocky courtyard. " * 80, actions=actions, seed=42)
+    split, old = InputHeaderRenderer(**inputs), InputHeaderRenderer(**inputs, layout="inline")
+    assert split.prompt_left == old.prompt_left
+    assert split.prompt_width == old.prompt_width
+    assert split.scroll_travel == old.scroll_travel
+    assert split.metadata()["prompt_scroll_pixels_per_second"] == old.metadata()["prompt_scroll_pixels_per_second"]
+    for index in (0, 1, 48, 120, 240):
+        current, legacy = split.render(frame, index), old.render(frame, index)
+        np.testing.assert_array_equal(current[:HEADER_HEIGHT, :split.keys_left], legacy[:HEADER_HEIGHT, :old.keys_left])
+        # Old inline keys and INPUT label are absent; the historical prompt width is retained.
+        np.testing.assert_array_equal(current[:HEADER_HEIGHT, split.keys_left:], split.base.crop((split.keys_left, 0, split.width, HEADER_HEIGHT)))
+
+
+@pytest.mark.parametrize("key,tip", [("I", (24, 17)), ("J", (17, 24)), ("K", (24, 31)), ("L", (31, 24))])
+def test_camera_directions_use_rotated_vector_arrows_not_font_glyphs(key, tip):
+    from unittest.mock import Mock
+    draw = Mock()
+    InputHeaderRenderer._draw_arrow(draw, key, (10, 10, 39, 39), (255, 255, 255, 255))
+    points = draw.polygon.call_args.args[0]
+    assert len(points) == 7 and points[0] == tip
+    draw.text.assert_not_called()
 
 
 def test_long_prompt_scrolls_and_complete_original_is_retained():

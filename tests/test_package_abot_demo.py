@@ -67,6 +67,10 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(len(result['scenes'][0]['inspection_frames']), 6)
             self.assertTrue(result['visual_review_required'])
             self.assertTrue((output / 'README.txt').is_file())
+            readme = (output / 'README.txt').read_text(encoding='utf-8')
+            self.assertIn('左下WASD、右下方向箭头（I↑ J← K↓ L→）', readme)
+            self.assertIn('仅两个半透明HUD区域覆盖画面', readme)
+            self.assertIn('保留未注释原视频', readme)
 
             # A CPU-only padded fixture verifies packaging and default playback,
             # not the annotation renderer or model quality.
