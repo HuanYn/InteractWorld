@@ -63,6 +63,55 @@ Action 可选重采样工厂 `training.data.action_resampled:build_resampled_act
 不加载其成品权重，也不自动替换当前 Demo。公开配置包含同源开关对照、20步执行段和
 严格恢复用法；新阶段的 GPU 资源表现、动作控制和15秒画质仍需实际验证。
 
+## 无 teacher 的历史噪声候选
+
+`train_causal_history_noise.py` 和 `training/history_noise.py` 提供独立的实验阶段：
+从已有的**干净历史 Causal checkpoint**只加载 Adapter/LoRA 权重，创建新的 optimizer、
+训练 RNG 和本阶段 step0；不是再加载 Action teacher，不新增 teacher 预测或蒸馏标签。
+它不改变既有 Causal 入口，也不加载已暂停的 teacher-flow 实验。
+
+一半样本保留原干净历史并直接执行旧 loss；另一半逐样本采样 `sigma ~ Uniform(0, sigma_max)`，
+只把独立历史条件改成 `clean_x=(1-sigma)*clean+sigma*Gaussian`，并设置 `aug_t=1000*sigma`。
+`sigma_max` 在新阶段已完成 optimizer 步数0到80之间从0.05线性升至0.15，之后保持0.15。
+首 latent 始终干净、对应 `aug_t=0`；当前 noisy、GT flow 目标、静态文本、动作和因果 mask 不变。
+噪声使用专用 seed1842 和绝对 microbatch 序号，不推进数据扩散 RNG，也不保存跨样本误差库。
+这是**GT 历史噪声增强**，不是在完整自生成 rollout 上训练，不能宣称解决长期漂移。
+
+模板：[causal_history_noise_example.json](configs/train/causal_history_noise_example.json)。
+此入口当前严格限定：父 stage 为 `causal_teacher_forcing_v1`、实际父 step60／micro480；
+数据为 native97、绝对序号重采样、内部静态文本；batch1×accum8、每20步 checkpoint，
+并从绝对样本480开始。入口允许配置20–200步，示例保持200步上限。
+**不是任意 checkpoint 的通用微调入口**。
+需要自己训练得到符合契约的父模型，并保留它的原始 YAML 和特征缓存；不附带权重。
+将模板的 `/project` 路径及两个全零 SHA 占位符换成实际值。原始 YAML 必须与父 checkpoint
+中保存的配置完全一致，不能改写来源来通过检查。候选和对照共用它；对照只把 JSON 的
+`history_noise.enabled` 设为 `false`，并使用另一独立 `output_dir`。
+
+```bash
+# 仅验证原始 YAML + 新阶段 JSON，默认不加载模型、不使用 GPU。
+python train_causal_history_noise.py \
+  --config /project/configs/original-clean97.yaml \
+  --stage-config /project/configs/history-noise-candidate.json
+
+# 由部署方提供真实授权、GPU/空间/预算检查的 authorizer；公开代码不附带放行器。
+python train_causal_history_noise.py \
+  --config /project/configs/original-clean97.yaml \
+  --stage-config /project/configs/history-noise-candidate.json \
+  --stop-after-step 20 --launch --authorizer ops_authorizer:authorize
+```
+
+部署方的 `authorize(args=..., config=..., stage_config=...)` 必须核实本次精确配置、
+GPU 使用权限与空闲条件、空间和预算，并持续监督自己的进程；返回真实检查收据。
+在命名 screen/tmux 内运行并单独 tee 日志，不用恒为真的占位函数绕过门禁。
+后续仅在资源和生成输出检查支持时，用同一原始 YAML、同一阶段 JSON 加
+`--resume /project/runs/causal-history-noise-candidate/checkpoints/step-0000020.pt`
+及新的有界 `--stop-after-step 40` 恢复；不要为执行段改写 `max_steps`。
+严格恢复核对 stage、父模型、两份配置、数据绝对游标和方法契约，并恢复 optimizer/RNG。
+
+本阶段尚不能宣称画质、动作控制或15秒稳定性改善，也不自动替换当前 Demo。
+GT-history／self-history 的同输入3秒对照只能用于定位误差传播；GT 辅助的 oracle 输出
+必须明确标记为诊断，不能作为可部署生成效果。训练后的展示比较仍需同输入的真实15秒输出。
+
 ## CPU 快速检查
 
 Python 3.12；FFmpeg/FFprobe 用于媒体契约测试，不需要 GPU 或模型下载。

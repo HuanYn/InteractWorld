@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "99d27453264aca9371f219646c865d13cf7858bd",
+  "source_revision": "e3c441678b826173701c5a08a1c30dd2ef5de366",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,8 +30,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "c79462d7cc260f478bc073d26857240c5a2ac69743836062d71709b030a27381",
-      "bytes": 17329,
+      "sha256": "f78f1a03174668433816d5783ee8a0c67d5c43c30dcf3af8a34d08e48b0be08b",
+      "bytes": 20951,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -88,6 +88,11 @@
       "sha256": "d46f3f419b8efe13dd7f88dc49e58a684391de360356cf1ad8e8778ef7445522",
       "bytes": 2171,
       "source_path": "public_repro/configs/train/causal_context_error_recycling_example.yaml"
+    },
+    "configs/train/causal_history_noise_example.json": {
+      "sha256": "43c36de385ae6de726b006effbd3f03d64b366eb351082e701427a643f400854",
+      "bytes": 743,
+      "source_path": "public_repro/configs/train/causal_history_noise_example.json"
     },
     "configs/train/causal_moba_example.yaml": {
       "sha256": "988174f78f52a3874cfd34a1b62d681e81ac8295466e1e78e40fdc7347be8af3",
@@ -334,6 +339,11 @@
       "bytes": 2732,
       "source_path": "tests/test_gpu_gate.py"
     },
+    "tests/test_history_noise.py": {
+      "sha256": "8a9a4fac22a3c8be5f076d68f31b5a7fa06987ae6723c8e691de28a1c398af5c",
+      "bytes": 5759,
+      "source_path": "tests/test_history_noise.py"
+    },
     "tests/test_input_header.py": {
       "sha256": "cc28a779f0d73e2f05eb63eaf12e7628a127f32fe399f16f460015797070d0ab",
       "bytes": 11080,
@@ -384,6 +394,11 @@
       "bytes": 1037,
       "source_path": "tests/test_scene_static_prompts.py"
     },
+    "tests/test_train_causal_history_noise.py": {
+      "sha256": "b3ec0258b90672e3968eba2d973a2f7032bb76bb1545677ce95394cb5a64159e",
+      "bytes": 5209,
+      "source_path": "tests/test_train_causal_history_noise.py"
+    },
     "tests/test_wan_causal_priming.py": {
       "sha256": "dd8449987e020c9988b231444fb10079f54d21393c131db5e9c30b89b962345d",
       "bytes": 2805,
@@ -413,6 +428,11 @@
       "sha256": "dfc98d7c4bf9cfa0ed8ada6ba0defc197079377b8d5a447c0736cedf86de706d",
       "bytes": 60649,
       "source_path": "train_action_teacher.py"
+    },
+    "train_causal_history_noise.py": {
+      "sha256": "b3e5fca09543de177e7ca23a3ebbcd96ecd14669d94b6896dfa907643271c8f8",
+      "bytes": 22882,
+      "source_path": "train_causal_history_noise.py"
     },
     "train_causal_moba.py": {
       "sha256": "0ba7fcafcb9372df7b686be17f4fa9e640fce0f327c87066cede2c8df9ad69a9",
@@ -563,6 +583,11 @@
       "sha256": "2b254a9c2038e62f63a2c0b2e29b67cba131d05012a7ad5b750e03a2403abb05",
       "bytes": 4427,
       "source_path": "training/gpu_gate.py"
+    },
+    "training/history_noise.py": {
+      "sha256": "05b0bd997825b71c99b51ae0c14f296168b5d372c20cd8f1e1cdd95468356882",
+      "bytes": 10085,
+      "source_path": "training/history_noise.py"
     },
     "training/longforcing_lite.py": {
       "sha256": "2100850ee0867d46769f7d88e95b6449c0c9aa98f59383bb898c8c1de9d67005",
@@ -715,5 +740,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1599104
+  "source_bytes": 1647404
 }

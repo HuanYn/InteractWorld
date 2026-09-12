@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "stage": "causal_history_noise_v1",
+  "base_config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "parent_checkpoint_path": "/project/runs/causal-clean97/checkpoints/step-0000060.pt",
+  "parent_checkpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "parent_expected_stage": "causal_teacher_forcing_v1",
+  "parent_expected_step": 60,
+  "data_start_absolute_index": 480,
+  "max_steps": 200,
+  "output_dir": "/project/runs/causal-history-noise-candidate",
+  "history_noise": {
+    "schema_version": 1,
+    "enabled": true,
+    "seed": 1842,
+    "clean_probability": 0.5,
+    "sigma_start": 0.05,
+    "sigma_end": 0.15,
+    "curriculum_steps": 80
+  }
+}
