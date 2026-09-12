@@ -8,6 +8,7 @@ authorization gate has passed.
 from __future__ import annotations
 
 import inspect
+import copy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping
@@ -29,8 +30,10 @@ from training.models.lora import (
 )
 from training.runtime import collect_manifest_hashes, sha256_file
 from training.paths import is_pinned_base_model
+from training.error_recycling import ContextErrorRecycling, ErrorRecyclingConfig
 
 STAGE_NAME = "causal_teacher_forcing_v1"
+ERROR_RECYCLING_STAGE_NAME = "causal_context_error_recycling_v1"
 PARENT_STAGE_NAME = "action_teacher_lora_v1"
 PINNED_BASE_MODEL = (
     "/path/to/interactworld/models/"
@@ -123,9 +126,15 @@ class CausalTeacherForcingConfig:
     lineage: TeacherLineageConfig = field(default_factory=TeacherLineageConfig)
     optimizer: CausalOptimizerConfig = field(default_factory=CausalOptimizerConfig)
     training: CausalTrainingConfig = field(default_factory=CausalTrainingConfig)
+    error_recycling: ErrorRecyclingConfig = field(default_factory=ErrorRecyclingConfig)
 
     def validate(self) -> None:
         errors: list[str] = []
+        self.error_recycling.validate()
+        if self.error_recycling.enabled and self.training.checkpoint_every != 20:
+            errors.append("context error recycling requires resumable checkpoints every 20 optimizer steps")
+        if self.error_recycling.frames_per_block != self.model.num_frame_per_block:
+            errors.append("error recycling block size must match the causal model")
         try:
             validate_action_scale(self.model.action_scale)
         except ValueError as exc:
@@ -173,20 +182,25 @@ class CausalTeacherForcingConfig:
             expected_index.suffix + ".receipt.json"
         ):
             errors.append("feature_receipt_path must bind the consumed feature index receipt")
-        if (self.data.num_frames, self.data.height, self.data.width) != (49, 480, 832):
-            errors.append("causal v1 is fixed to 49x480x832 RGB windows")
+        if self.data.num_frames not in (49, 97) or (self.data.height, self.data.width) != (480, 832):
+            errors.append("causal training supports only 49/97x480x832 RGB windows")
+        if self.data.num_frames == 97:
+            if self.data.data_factory != "training.data.action_resampled:build_resampled_action_teacher_dataloader":
+                errors.append("97-frame causal training requires the absolute-index resampled action factory")
+            if self.data.prompt_cache_path is not None:
+                errors.append("97-frame causal training requires inline scene-static prompt features")
         latent_frames = 1 + (self.data.num_frames - 1) // self.model.temporal_compression
         latent_height = self.data.height // self.model.spatial_compression
         latent_width = self.data.width // self.model.spatial_compression
         if (latent_frames, self.model.latent_channels, latent_height, latent_width) != (
-            13,
+            25 if self.data.num_frames == 97 else 13,
             48,
             30,
             52,
         ):
-            errors.append("49x480x832 RGB must map to latent [13,48,30,52]")
+            errors.append("49/97x480x832 RGB must map to latent [13/25,48,30,52]")
         if (latent_frames - 1) % self.model.num_frame_per_block:
-            errors.append("the 12 future latent frames must form complete 3-frame blocks")
+            errors.append("future latent frames must form complete 3-frame blocks")
         if self.lineage.expected_stage != PARENT_STAGE_NAME:
             errors.append(f"expected parent stage must be {PARENT_STAGE_NAME!r}")
         if not self.lineage.checkpoint_path:
@@ -209,7 +223,35 @@ class CausalTeacherForcingConfig:
             raise ValueError("invalid causal teacher-forcing configuration:\n- " + "\n- ".join(errors))
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        # Old OFF configs/checkpoints retain their exact serialized contract.
+        if not self.error_recycling.enabled:
+            result.pop("error_recycling")
+        return result
+
+
+def stage_name(config: CausalTeacherForcingConfig) -> str:
+    return ERROR_RECYCLING_STAGE_NAME if config.error_recycling.enabled else STAGE_NAME
+
+
+def error_recycling_contract(config: CausalTeacherForcingConfig) -> dict[str, Any]:
+    """Our context-only adaptation; not DMD, full SVI, or an upstream result."""
+    return {
+        "method": ERROR_RECYCLING_STAGE_NAME,
+        "config": config.error_recycling.to_dict(),
+        "context_only": True,
+        "independent_first_latent_unchanged": True,
+        "noisy_target_sigma_actions_prompt_unchanged": True,
+        "visibility": "official_completed_clean_blocks_only",
+        "update_order": "prepare_from_old_buffer; forward; observe_detached_prediction",
+        "residual": "(noisy-sigma*prediction)-GT_clean",
+        "independent_checkpointed_cpu_rng": True,
+        "full_self_rollout": False,
+        "consistency_distillation": False,
+        "distribution_matching_distillation": False,
+        "complete_svi_recipe": False,
+        "quality_validated": False,
+    }
 
 
 def _tuple_fields(raw: dict[str, Any]) -> dict[str, Any]:
@@ -233,7 +275,7 @@ def load_causal_config(path: str | Path) -> CausalTeacherForcingConfig:
     config_path = Path(path)
     with config_path.open("r", encoding="utf-8") as stream:
         raw = yaml.safe_load(stream) or {}
-    allowed = {"model", "data", "lineage", "optimizer", "training"}
+    allowed = {"model", "data", "lineage", "optimizer", "training", "error_recycling"}
     unknown = set(raw).difference(allowed)
     if unknown:
         raise ValueError(f"unknown config sections: {sorted(unknown)}")
@@ -244,6 +286,7 @@ def load_causal_config(path: str | Path) -> CausalTeacherForcingConfig:
         lineage=TeacherLineageConfig(**raw.get("lineage", {})),
         optimizer=CausalOptimizerConfig(**raw.get("optimizer", {})),
         training=CausalTrainingConfig(**raw.get("training", {})),
+        error_recycling=ErrorRecyclingConfig(**raw.get("error_recycling", {})),
     )
     config.validate()
     return config
@@ -365,6 +408,9 @@ def _prompt_contract(data: Mapping[str, Any], hashes: Mapping[str, str]) -> dict
         raise ValueError("legacy prompt contract unexpectedly contains prompt cache hashes")
     if path is not None and any(not hashes.get(key) for key in PROMPT_CACHE_HASH_KEYS):
         raise ValueError("static prompt contract is missing prompt cache artifact hashes")
+    if data.get("num_frames") == 97 and path is None:
+        return {"policy": "scene_static_only_v1", "prompt_cache_path": None,
+                "artifact_hashes": {}, "storage": "inline_97_frame_feature_shards"}
     return {
         "policy": "scene_static_only_v1" if path is not None else "original_feature_cache_prompt",
         "prompt_cache_path": path,
@@ -385,6 +431,11 @@ def artifact_hashes(
             "teacher_checkpoint": config.lineage.checkpoint_path,
         }
     )
+    if config.data.num_frames == 97:
+        from training.data.action_dataset import validate_feature_cache_binding, validate_window97_contract
+
+        receipt = validate_feature_cache_binding(config.data.feature_index_path, config.data.manifest_path)
+        validate_window97_contract(receipt)
     if config.data.manifest_sha256 is not None:
         if hashes["dataset_manifest"] != config.data.manifest_sha256:
             raise ValueError(
@@ -419,9 +470,13 @@ class TeacherCheckpointLineage:
     stage: str
     step: int
     source_manifest_hashes: dict[str, str]
+    source_initialization: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        if self.source_initialization is None:
+            result.pop("source_initialization")
+        return result
 
 
 def _is_named_teacher_parameter(name: str) -> bool:
@@ -482,6 +537,9 @@ def load_teacher_checkpoint(
     source_data = source_config.get("data", {})
     if not isinstance(source_data, Mapping):
         raise ValueError("teacher checkpoint has invalid serialized data configuration")
+    if config.data.num_frames == 97 and any(source_data.get(key) != getattr(config.data, key)
+                                           for key in ("num_frames", "data_factory", "height", "width")):
+        raise ValueError("97-frame causal parent length/resampled factory/geometry mismatch")
     if _prompt_contract(source_data, source_hashes) != _prompt_contract(asdict(config.data), hashes):
         raise ValueError("teacher and causal stages disagree on prompt policy/path/hash contract")
     source_model = source_config.get("model")
@@ -514,6 +572,8 @@ def load_teacher_checkpoint(
         stage=str(stage),
         step=step,
         source_manifest_hashes={str(key): str(value) for key, value in source_hashes.items()},
+        source_initialization=(copy.deepcopy(payload.get("initialization"))
+                               if config.error_recycling.enabled or config.data.num_frames == 97 else None),
     )
     return payload, lineage
 
@@ -669,13 +729,25 @@ def causal_teacher_forcing_loss(
     batch: Mapping[str, Any],
     config: CausalTeacherForcingConfig,
     device: torch.device,
+    *,
+    recycler: ContextErrorRecycling | None = None,
+    recycling_metrics: dict[str, Any] | None = None,
 ) -> torch.Tensor:
     """Run the checked ``clean_x`` tuple/tensor flow-prediction contract."""
 
     clean_cpu = validate_causal_batch(batch, config)
+    if config.error_recycling.enabled != (recycler is not None):
+        raise ValueError("error-recycling config and runtime state must be enabled together")
+    sigma_cpu = batch["timesteps"].detach().float().cpu() / 1000.0 if recycler is not None else None
+    if recycler is not None:
+        context_cpu, receipt = recycler.prepare_context(clean_cpu, sigma_cpu)
+        if not torch.equal(context_cpu[:, :1], clean_cpu[:, :1]):
+            raise RuntimeError("error recycling changed the independent first latent")
+    else:
+        context_cpu = clean_cpu
     noisy = _move(batch["noisy_latents"], device, dtype=torch.bfloat16)
     target = _move(batch["target_flow"], device, dtype=torch.bfloat16)
-    clean = _move(clean_cpu, device, dtype=torch.bfloat16)
+    clean = _move(context_cpu, device, dtype=torch.bfloat16)
     timestep = _move(batch["timesteps"], device)
     if timestep.ndim == 1:
         timestep = timestep.unsqueeze(0)
@@ -710,5 +782,14 @@ def causal_teacher_forcing_loss(
         raise RuntimeError(
             f"causal Wan prediction shape {tuple(prediction.shape)} != target {tuple(target.shape)}"
         )
+    if recycler is not None:
+        if not bool(torch.isfinite(prediction.detach()).all()):
+            raise FloatingPointError("non-finite prediction cannot enter the error buffer")
+        # No second forward, no gradient path through history/error storage, and
+        # this batch's residual cannot change its already prepared clean_x.
+        observed = recycler.observe(batch["noisy_latents"], batch["target_flow"],
+                                    prediction.detach(), sigma_cpu, clean=clean_cpu)
+        if recycling_metrics is not None:
+            recycling_metrics.update({"prepare": receipt, "buffer": observed})
     # Latent frame zero is a clean condition, not a denoising target.
     return torch.nn.functional.mse_loss(prediction[:, 1:].float(), target[:, 1:].float())

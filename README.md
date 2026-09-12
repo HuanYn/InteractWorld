@@ -56,6 +56,13 @@ Action 可选重采样工厂 `training.data.action_resampled:build_resampled_act
 从旧采样 checkpoint 切换时使用 `--sampling-transition-from`，严格核对来源，
 只加载权重并新建 optimizer/RNG/step0；不要将采样切换冒充原运行的严格 resume。
 
+新增实验性 [native97 因果历史误差回收](docs/context-error-recycling.md)：在因果训练的
+独立历史条件中重用旧预测残差，保留干净首图，不改变 noisy 输入、flow 目标或数值动作。
+97帧缓存使用内部静态文本特征，`prompt_cache_path: null` 在此契约下不是旧 narrative。
+它借鉴 LongLive 的 context error-recycling，不是完整 SVI、DMD 或长时自生成 rollout；
+不加载其成品权重，也不自动替换当前 Demo。公开配置包含同源开关对照、20步执行段和
+严格恢复用法；新阶段的 GPU 资源表现、动作控制和15秒画质仍需实际验证。
+
 ## CPU 快速检查
 
 Python 3.12；FFmpeg/FFprobe 用于媒体契约测试，不需要 GPU 或模型下载。

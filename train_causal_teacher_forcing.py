@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import random
 import sys
 import time
 from collections.abc import Iterable, Mapping
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import numpy as np
 
 from training.causal_tf import (
     STAGE_NAME,
@@ -32,7 +34,10 @@ from training.causal_tf import (
     load_causal_config,
     load_teacher_checkpoint,
     teacher_forcing_visibility,
+    stage_name,
+    error_recycling_contract,
 )
+from training.error_recycling import ContextErrorRecycling
 from training.gpu_gate import query_dedicated_gpu, validate_confirmation
 from training.models.lora import load_trainable_state_dict, trainable_state_dict
 from training.runtime import (
@@ -65,6 +70,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--resume", default=None, help="stage-2 resumable checkpoint path")
     parser.add_argument("--max-steps", type=int, default=None, help="explicit optimizer-step cap")
+    parser.add_argument("--stop-after-step", type=int, default=None,
+                        help="absolute execution segment stop; leaves the configured max_steps and hashes unchanged")
     parser.add_argument("--output-dir", default=None, help="explicit run directory override")
     parser.add_argument("--confirmed-gpu-index", type=int)
     parser.add_argument("--confirmed-gpu-uuid")
@@ -80,6 +87,9 @@ def _apply_overrides(config: CausalTeacherForcingConfig, args: argparse.Namespac
         config.training.max_steps = args.max_steps
     if args.output_dir is not None:
         config.training.output_dir = args.output_dir
+    stop = getattr(args, "stop_after_step", None)
+    if stop is not None and not 1 <= stop <= config.training.max_steps:
+        raise ValueError("--stop-after-step must be between 1 and configured max_steps")
     config.validate()
 
 
@@ -96,7 +106,7 @@ def validation_report(
     report: dict[str, Any] = {
         "status": "configuration_valid",
         "mode": "cpu_validate",
-        "stage": STAGE_NAME,
+        "stage": stage_name(config),
         "config_path": str(Path(config_path).resolve()),
         "config_sha256": sha256_file(config_path),
         "git_revision": git_revision(Path(__file__).parent),
@@ -120,6 +130,8 @@ def validation_report(
     report["available_artifact_sha256"] = {
         name: sha256_file(path) for name, path in paths.items() if path.is_file()
     }
+    if config.error_recycling.enabled:
+        report["method_contract"] = error_recycling_contract(config)
     return report
 
 
@@ -230,10 +242,13 @@ def _checkpoint_payload(
     metrics: dict[str, Any],
     manifest_hashes: dict[str, str],
     teacher_lineage: dict[str, Any],
+    recycler: ContextErrorRecycling | None = None,
 ) -> dict[str, Any]:
-    return {
+    if config.error_recycling.enabled != (recycler is not None):
+        raise ValueError("checkpoint requires the matching error-recycling runtime state")
+    payload = {
         "format_version": 1,
-        "stage": STAGE_NAME,
+        "stage": stage_name(config),
         "step": step,
         "micro_batches_consumed": micro_batches_consumed,
         "trainable_model": trainable_state_dict(model),
@@ -245,6 +260,14 @@ def _checkpoint_payload(
         "torch_rng_state": torch.get_rng_state(),
         "cuda_rng_state_all": torch.cuda.get_rng_state_all(),
     }
+    if config.data.num_frames == 97 or recycler is not None:
+        payload.update(python_rng_state=random.getstate(), numpy_rng_state=np.random.get_state())
+    if recycler is not None:
+        if recycler.metrics()["observations"] != micro_batches_consumed:
+            raise ValueError("error buffer observations differ from checkpoint data cursor")
+        payload.update(method_contract=error_recycling_contract(config),
+                       error_recycling_state=recycler.state_dict())
+    return payload
 
 
 def _restore_resume(
@@ -255,22 +278,48 @@ def _restore_resume(
     hashes: dict[str, str],
     teacher_lineage: dict[str, Any],
     gradient_accumulation_steps: int,
+    config: CausalTeacherForcingConfig | None = None,
+    recycler: ContextErrorRecycling | None = None,
 ) -> tuple[int, int]:
     checkpoint = load_checkpoint(path, expected_manifest_hashes=hashes, map_location="cpu")
-    if checkpoint.get("stage") != STAGE_NAME:
-        raise ValueError(f"resume checkpoint is not from {STAGE_NAME}")
+    expected_stage = stage_name(config) if config is not None else STAGE_NAME
+    if checkpoint.get("stage") != expected_stage:
+        raise ValueError(f"resume checkpoint is not from {expected_stage}; method changes require a fresh stage")
     if checkpoint.get("parent_teacher") != teacher_lineage:
         raise ValueError("resume checkpoint parent-teacher lineage changed")
-    load_trainable_state_dict(model, checkpoint["trainable_model"])
-    optimizer.load_state_dict(checkpoint["optimizer"])
-    torch.set_rng_state(checkpoint["torch_rng_state"])
-    torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state_all"])
+    enabled = config is not None and config.error_recycling.enabled
+    if enabled != (recycler is not None):
+        raise ValueError("resume requires the matching error-recycling runtime state")
+    strict = enabled or (config is not None and config.data.num_frames == 97)
+    if strict:
+        if checkpoint.get("config") != config.to_dict():
+            raise ValueError("strict causal resume configuration changed")
+        required = ("python_rng_state", "numpy_rng_state",
+                    "micro_batches_consumed", "optimizer", "torch_rng_state", "cuda_rng_state_all")
+        if any(name not in checkpoint for name in required):
+            raise ValueError("strict causal resume is missing a resumable state field")
+    if enabled:
+        if "error_recycling_state" not in checkpoint:
+            raise ValueError("error-recycling resume is missing its resumable buffer state")
+        if checkpoint.get("method_contract") != error_recycling_contract(config):
+            raise ValueError("strict error-recycling resume method contract changed")
     step = int(checkpoint["step"])
     micro_batches_consumed = int(
         checkpoint.get("micro_batches_consumed", step * gradient_accumulation_steps)
     )
     if micro_batches_consumed != step * gradient_accumulation_steps:
         raise ValueError("checkpoint micro-batch position is inconsistent with optimizer step")
+    if recycler is not None:
+        if checkpoint["error_recycling_state"].get("observations") != micro_batches_consumed:
+            raise ValueError("resume error buffer observations differ from data cursor")
+        recycler.load_state_dict(checkpoint["error_recycling_state"])
+    load_trainable_state_dict(model, checkpoint["trainable_model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    torch.set_rng_state(checkpoint["torch_rng_state"])
+    torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state_all"])
+    if strict:
+        random.setstate(checkpoint["python_rng_state"])
+        np.random.set_state(checkpoint["numpy_rng_state"])
     return step, micro_batches_consumed
 
 
@@ -303,6 +352,17 @@ def _iterator_at_micro_batch(
     return loader, iterator
 
 
+def _resume_iterator_preserving_rng(loader, micro_batches_consumed):
+    """Rebuild/skip the stateless data cursor without consuming restored RNG."""
+    python_state, numpy_state = random.getstate(), np.random.get_state()
+    try:
+        with torch.random.fork_rng(devices=[]):
+            return _iterator_at_micro_batch(loader, micro_batches_consumed)
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+
+
 def launch(
     config: CausalTeacherForcingConfig,
     config_path: str | Path,
@@ -312,9 +372,13 @@ def launch(
     confirmed_gpu_uuid: str,
     confirmed_at_utc: str,
     allocation_profile: str,
+    stop_after_step: int | None = None,
 ) -> None:
     # All CPU lineage checks happen before model construction.  CUDA inventory
     # is touched only inside the explicit --launch path.
+    target_step = config.training.max_steps if stop_after_step is None else stop_after_step
+    if not 1 <= target_step <= config.training.max_steps:
+        raise ValueError("execution stop must be between 1 and configured max_steps")
     hashes = artifact_hashes(config, config_path)
     teacher_payload, teacher_lineage = load_teacher_checkpoint(config, hashes)
     validate_confirmation(confirmed_at_utc)
@@ -343,7 +407,7 @@ def launch(
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata = {
         "command": sys.argv,
-        "stage": STAGE_NAME,
+        "stage": stage_name(config),
         "git_revision": git_revision(Path(__file__).parent),
         "config": config.to_dict(),
         "manifest_hashes": hashes,
@@ -357,18 +421,26 @@ def launch(
         },
         "conditioning_modules": "precomputed; VAE and T5 are not loaded in this process",
         "started_unix": time.time(),
+        "execution_stop_after_step": target_step,
+        "configured_max_steps": config.training.max_steps,
     }
+    if config.error_recycling.enabled:
+        metadata.update(method_contract=error_recycling_contract(config),
+                        execution_mode="strict_resume" if resume else "fresh_stage_weights_only_parent",
+                        error_recycling_restore_status="pending" if resume else "fresh_empty_buffer")
     (output_dir / "run_metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
     )
 
     model, summary = _build_model(config, teacher_payload, device)
+    del teacher_payload
     optimizer = _build_optimizer(model, config)
     factory = _import_factory(config.data.data_factory)
     loader: Iterable[Mapping[str, Any]] = factory(config=config.data, training=config.training)
     lineage_dict = teacher_lineage.as_dict()
     start_step = 0
     micro_batches_consumed = 0
+    recycler = ContextErrorRecycling(config.error_recycling) if config.error_recycling.enabled else None
     if resume:
         start_step, micro_batches_consumed = _restore_resume(
             resume,
@@ -377,12 +449,21 @@ def launch(
             hashes=hashes,
             teacher_lineage=lineage_dict,
             gradient_accumulation_steps=config.training.gradient_accumulation_steps,
+            config=config,
+            recycler=recycler,
         )
+        if start_step >= target_step:
+            raise ValueError("execution stop must be greater than the resumed optimizer step")
+    if recycler is not None:
+        metadata["error_recycling_restore_status"] = "restored_exact_state" if resume else "fresh_empty_buffer"
+        metadata["error_recycling_initial_metrics"] = recycler.metrics()
+        (output_dir / "run_metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     manager = CheckpointManager(output_dir, keep_last=config.training.keep_last)
 
     print(json.dumps({
         "status": "launching",
-        "stage": STAGE_NAME,
+        "stage": stage_name(config),
         "trainable_parameters": summary.trainable_parameters,
         "total_parameters": summary.total_parameters,
         "lora_layers": len(summary.replaced_linear_layers),
@@ -390,15 +471,22 @@ def launch(
         "resume_step": start_step,
     }, sort_keys=True))
     model.zero_grad(set_to_none=True)
-    _, iterator = _iterator_at_micro_batch(loader, micro_batches_consumed)
+    iterator_factory = (_resume_iterator_preserving_rng
+                        if resume and (recycler is not None or config.data.num_frames == 97)
+                        else _iterator_at_micro_batch)
+    _, iterator = iterator_factory(loader, micro_batches_consumed)
     tracker = ThroughputTracker.start()
     accumulated_loss = 0.0
     micro_step = micro_batches_consumed
     global_step = start_step
     last_saved_step = start_step
     latest_metrics: dict[str, Any] = {"loss": float("inf")}
+    step_started = time.perf_counter()
 
-    while global_step < config.training.max_steps:
+    while global_step < target_step:
+        if micro_step % config.training.gradient_accumulation_steps == 0:
+            torch.cuda.synchronize(device)
+            step_started = time.perf_counter()
         try:
             batch = next(iterator)
         except StopIteration:
@@ -408,7 +496,7 @@ def launch(
             except StopIteration as exc:
                 raise RuntimeError("data factory returned an empty iterable") from exc
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            loss = causal_teacher_forcing_loss(model, batch, config, device)
+            loss = causal_teacher_forcing_loss(model, batch, config, device, recycler=recycler)
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite causal teacher-forcing loss: {loss.item()}")
         (loss / config.training.gradient_accumulation_steps).backward()
@@ -431,6 +519,11 @@ def launch(
             "samples_per_second": tracker.samples_per_second,
             "peak_vram_bytes": peak_vram_bytes(device),
         }
+        torch.cuda.synchronize(device)
+        latest_metrics["optimizer_step_seconds"] = time.perf_counter() - step_started
+        if recycler is not None:
+            latest_metrics.update(error_recycling=recycler.metrics(),
+                                  error_recycling_restore_status=metadata["error_recycling_restore_status"])
         if global_step % config.training.log_every == 0:
             record = {"step": global_step, **latest_metrics, "unix": time.time()}
             append_jsonl(output_dir / "metrics.jsonl", record)
@@ -445,6 +538,7 @@ def launch(
                 metrics=latest_metrics,
                 manifest_hashes=hashes,
                 teacher_lineage=lineage_dict,
+                recycler=recycler,
             )
             manager.save(payload, step=global_step, metric=mean_loss)
             last_saved_step = global_step
@@ -459,15 +553,28 @@ def launch(
             metrics=latest_metrics,
             manifest_hashes=hashes,
             teacher_lineage=lineage_dict,
+            recycler=recycler,
         )
         manager.save(payload, step=global_step, metric=float(latest_metrics["loss"]))
-    print(json.dumps({
-        "status": "complete",
-        "stage": STAGE_NAME,
+    execution_result = {
+        "status": "complete" if global_step == config.training.max_steps else "segment_complete",
+        "stop_reason": "configured_max_steps" if global_step == config.training.max_steps else "execution_step_cap",
+        "stage": stage_name(config),
         "step": global_step,
+        "micro_batches_consumed": micro_step,
+        "configured_max_steps": config.training.max_steps,
+        "execution_stop_after_step": target_step,
+        "resume_step": start_step,
+        "checkpoint_path": str((output_dir / "checkpoints" / f"step-{global_step:07d}.pt").resolve()),
         "output_dir": str(output_dir.resolve()),
         "peak_vram_bytes": peak_vram_bytes(device),
-    }, sort_keys=True))
+        **({"error_recycling": recycler.metrics(),
+            "error_recycling_restore_status": metadata["error_recycling_restore_status"]}
+           if recycler is not None else {}),
+    }
+    (output_dir / "execution_result.json").write_text(
+        json.dumps(execution_result, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(execution_result, sort_keys=True))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -497,6 +604,7 @@ def main(argv: list[str] | None = None) -> int:
         confirmed_gpu_uuid=args.confirmed_gpu_uuid,
         confirmed_at_utc=args.confirmed_at_utc,
         allocation_profile=args.allocation_profile,
+        stop_after_step=args.stop_after_step,
     )
     return 0
 

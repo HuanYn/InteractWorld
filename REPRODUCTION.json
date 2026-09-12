@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "d918a711387725b2195507b3656669196abaed86",
+  "source_revision": "99d27453264aca9371f219646c865d13cf7858bd",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,8 +30,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "0344a3ec4a98a4c3753690bbe67fe132a16517f444b59c965c8388d68e21da6d",
-      "bytes": 16674,
+      "sha256": "c79462d7cc260f478bc073d26857240c5a2ac69743836062d71709b030a27381",
+      "bytes": 17329,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -84,6 +84,11 @@
       "bytes": 1551,
       "source_path": "configs/train/action_teacher_window97_resampled.yaml"
     },
+    "configs/train/causal_context_error_recycling_example.yaml": {
+      "sha256": "d46f3f419b8efe13dd7f88dc49e58a684391de360356cf1ad8e8778ef7445522",
+      "bytes": 2171,
+      "source_path": "public_repro/configs/train/causal_context_error_recycling_example.yaml"
+    },
     "configs/train/causal_moba_example.yaml": {
       "sha256": "988174f78f52a3874cfd34a1b62d681e81ac8295466e1e78e40fdc7347be8af3",
       "bytes": 1202,
@@ -108,6 +113,11 @@
       "sha256": "c54c922879d3ab88a944b9c70a4594a5133bc3995c4c78318825a4c1e19cccb7",
       "bytes": 2332,
       "source_path": "configs/train/longforcing_lite_v1.yaml"
+    },
+    "docs/context-error-recycling.md": {
+      "sha256": "e3cf84213e532d30e93063f6669890768d3fa15753fd30153937b10e094a8d2e",
+      "bytes": 6180,
+      "source_path": "public_repro/docs/context-error-recycling.md"
     },
     "docs/moba-inspired.md": {
       "sha256": "4163847699001339318721159f4658b36945ceb737027604a6d2833b9babec29",
@@ -244,6 +254,11 @@
       "bytes": 16417,
       "source_path": "tests/test_causal_bidirectional_training.py"
     },
+    "tests/test_causal_error_recycling.py": {
+      "sha256": "8cf2f8742501422c0026dff49a8bffecede4f3451b0b6c7e1e3bc60ab96a0603",
+      "bytes": 14082,
+      "source_path": "tests/test_causal_error_recycling.py"
+    },
     "tests/test_causal_flow_solver.py": {
       "sha256": "a8a8b3ec53e8cc3cbf5780515c8d579d0056fe9855afaf6f7976666bd875b67f",
       "bytes": 7465,
@@ -308,6 +323,11 @@
       "sha256": "c5d84d903c78340e9161835c1bd21765d309056a1e3dba0278fd4c8187cabd7a",
       "bytes": 4026,
       "source_path": "tests/test_demo_window6_action.py"
+    },
+    "tests/test_error_recycling.py": {
+      "sha256": "22038b51875af0fc6f4b411f556629d44b2a8e536c74431e7579e322ef7bb9d4",
+      "bytes": 8403,
+      "source_path": "tests/test_error_recycling.py"
     },
     "tests/test_gpu_gate.py": {
       "sha256": "d854ca962e1a328b728b3b0006daa5ca9b23ef76d86a256a711781c92c5e03a8",
@@ -400,8 +420,8 @@
       "source_path": "train_causal_moba.py"
     },
     "train_causal_teacher_forcing.py": {
-      "sha256": "9a1f6ea4b10160fbe1f1cf90825f46b7745b4a11999765fef65254f0c1420fa3",
-      "bytes": 19195,
+      "sha256": "0e2222f01234205dad382db10bd7d49ecbac0a9bc5eda22b115884733ca0bb45",
+      "bytes": 25821,
       "source_path": "train_causal_teacher_forcing.py"
     },
     "train_longforcing_lite.py": {
@@ -415,8 +435,8 @@
       "source_path": "training/causal_moba.py"
     },
     "training/causal_tf.py": {
-      "sha256": "484e4c1e07c44e20374f610433f91e6160a6661929cd8a50f1d5a5abffd65899",
-      "bytes": 30514,
+      "sha256": "cb4404672f5dc5c06a574541b3d8ccd25f4f8c978848debc54759b66d6f90833",
+      "bytes": 35447,
       "source_path": "training/causal_tf.py"
     },
     "training/config.py": {
@@ -508,6 +528,11 @@
       "sha256": "1f67f3f94d92a248bc8970855f853ece31378e21b5935c625e7427c7072bf54d",
       "bytes": 599,
       "source_path": "training/demo/worker.py"
+    },
+    "training/error_recycling.py": {
+      "sha256": "d6a198b24306eb9032a0f8072dc5a31de88a532d58fffe92cc8f9d368249f837",
+      "bytes": 16763,
+      "source_path": "training/error_recycling.py"
     },
     "training/eval/__init__.py": {
       "sha256": "ad8c61726db4ee9a3116dbb6192111e9e93f4a46bd821fff5c57189592fdcde1",
@@ -690,5 +715,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1539291
+  "source_bytes": 1599104
 }
