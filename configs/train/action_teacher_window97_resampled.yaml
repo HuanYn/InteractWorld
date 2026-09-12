@@ -1,0 +1,49 @@
+# Native97 sampling repair; weights-only initialization from old native97 step100.
+# Absolute-index sampling covers both cached windows and refreshes diffusion seeds.
+# The bounded runtime runs 0->40, fixed15, strict40->120, fixed15; no quality promise.
+model:
+  base_model_path: /path/to/interactworld/models/Wan2.2-TI2V-5B@921dbaf3f1674a56f47e83fb80a34bac8a8f203e
+  model_type: ci2v
+  timestep_shift: 5.0
+  lora_rank: 16
+  lora_alpha: 16.0
+  lora_dropout: 0.0
+  action_dim: 32
+  action_scale: 0.03
+  gradient_checkpointing: true
+  latent_channels: 48
+  temporal_compression: 4
+  spatial_compression: 16
+  num_frame_per_block: 3
+  independent_first_frame: true
+data:
+  manifest_path: /path/to/interactworld/data/window97-v1/manifests/train.jsonl
+  manifest_sha256: 9d801e0a453e097f01dbbf4d85322f7331e4a308a6eade241592053863d719be
+  prompt_cache_path: null
+  data_factory: training.data.action_resampled:build_resampled_action_teacher_dataloader
+  precomputed_latents: true
+  precomputed_text_embeddings: true
+  canonical_action_keys: [W, A, S, D, I, J, K, L]
+  rgb_frames_per_action_token: 4
+  height: 480
+  width: 832
+  num_frames: 97
+  num_workers: 4
+optimizer:
+  name: adamw8bit
+  adapter_lr: 0.00002
+  lora_lr: 0.000002
+  betas: [0.9, 0.95]
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+training:
+  precision: bf16
+  micro_batch_size: 1
+  gradient_accumulation_steps: 8
+  max_steps: 120
+  checkpoint_every: 20
+  keep_last: 2
+  keep_best: 1
+  seed: 42
+  output_dir: /path/to/interactworld/runs/abot-week-v1/action-window97-resampled-v1
+  log_every: 1

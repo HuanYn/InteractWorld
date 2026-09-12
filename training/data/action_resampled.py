@@ -155,6 +155,7 @@ def build_resampled_action_teacher_dataloader(*, config: Any, training: Any) -> 
         seed=training.seed,
         timestep_shift=5.0,
         prompt_cache_path=getattr(config, "prompt_cache_path", None),
+        num_frames=getattr(config, "num_frames", 49),
     )
     return DataLoader(
         dataset,

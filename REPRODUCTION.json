@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "8e677c918c3a28982f64759e9bcedab12bf5dec7",
+  "source_revision": "70167b7c9946be3bb828b050427eeb46e80dfdd6",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -78,6 +78,11 @@
       "sha256": "71cda672b59d6f09f336c75f62938365cc1f63b890dde1ae8995354a269526a9",
       "bytes": 1601,
       "source_path": "configs/train/action_teacher_window97_profile.yaml"
+    },
+    "configs/train/action_teacher_window97_resampled.yaml": {
+      "sha256": "9821aaf98a6c97885b6284bb5445584ca88690c61f3b560be1de922547e70e2f",
+      "bytes": 1551,
+      "source_path": "configs/train/action_teacher_window97_resampled.yaml"
     },
     "configs/train/causal_moba_example.yaml": {
       "sha256": "988174f78f52a3874cfd34a1b62d681e81ac8295466e1e78e40fdc7347be8af3",
@@ -369,6 +374,11 @@
       "bytes": 9614,
       "source_path": "tests/test_window97_data.py"
     },
+    "tests/test_window97_resampled.py": {
+      "sha256": "ef59f4d7e2682f7354af0c5bf3571c98dd59daae9212a2a1c155c2592d892013",
+      "bytes": 7818,
+      "source_path": "tests/test_window97_resampled.py"
+    },
     "tests/test_window97_trainer.py": {
       "sha256": "40986a58450c24266a45171187a5ad72f76324e55375c087de688454ae87595b",
       "bytes": 13846,
@@ -430,8 +440,8 @@
       "source_path": "training/data/action_dataset.py"
     },
     "training/data/action_resampled.py": {
-      "sha256": "87312609dc7b7faafcaa044d75b19a0bb2b26636331848cdf1276591c374c8f2",
-      "bytes": 6970,
+      "sha256": "96dc9df06e1df77d1a359550970771d1599724f9e90628ada1e6132e6133dcd4",
+      "bytes": 7024,
       "source_path": "training/data/action_resampled.py"
     },
     "training/data/action_schema.py": {
@@ -675,5 +685,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1522968
+  "source_bytes": 1532391
 }
