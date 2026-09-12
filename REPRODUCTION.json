@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "70167b7c9946be3bb828b050427eeb46e80dfdd6",
+  "source_revision": "d918a711387725b2195507b3656669196abaed86",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -274,6 +274,11 @@
       "bytes": 6232,
       "source_path": "tests/test_configure_reproduction.py"
     },
+    "tests/test_demo_euler_precision.py": {
+      "sha256": "5125806aaedfe7fd418112e6586fae574a77d64663b1ee13a59a6b4428fa69a3",
+      "bytes": 5536,
+      "source_path": "tests/test_demo_euler_precision.py"
+    },
     "tests/test_demo_joint_action.py": {
       "sha256": "a51d7c48057d0b3b05d0416acf5e0918286c8a8384597dd60f4ae5a8c97e00cd",
       "bytes": 5708,
@@ -470,8 +475,8 @@
       "source_path": "training/demo/__init__.py"
     },
     "training/demo/action_backend.py": {
-      "sha256": "13b6b06ea6fd14acf49d5dff6a9e130271360591e57ddf5f2a9550ea177557e9",
-      "bytes": 21322,
+      "sha256": "9640a189d6a8875f9053947fb4c49dd15b5c3b2ef9bae97769ca73c7db6bb61f",
+      "bytes": 22686,
       "source_path": "training/demo/action_backend.py"
     },
     "training/demo/backend.py": {
@@ -685,5 +690,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1532391
+  "source_bytes": 1539291
 }

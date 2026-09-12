@@ -174,18 +174,41 @@ def rollout_chunks(*, initial_latent, initial_rgb, prompt, actions, seed, genera
                 native_long_context=False, realtime=False)
 
 
-def euler_rollout(model, *, first, noise, conditions, sigmas):
-    """The actual noncausal flow update; separately testable with CPU tensors."""
+def euler_rollout(model, *, first, noise, conditions, sigmas, fp32_accumulation=False):
+    """Flow Euler with opt-in FP32 accumulation and unchanged model conditioning.
+
+    The default preserves the original solver arithmetic. With the explicit
+    flag, the supplied (already quantized) noise/first-frame values are promoted
+    to FP32 without a new draw. Only sigma differences and state updates use
+    FP32; model video inputs retain ``noise.dtype``. Timesteps are still computed
+    from the ORIGINAL supplied sigmas, exactly as in the default branch (even
+    BF16 multiply rounding). Conditions are passed through unchanged. The opt-in
+    result stays FP32; callers retain their existing decoder-input cast.
+
+    For a single-variable comparison, pass the same BF16 noise AND BF16 sigma
+    nodes to both modes; this flag does not construct a different schedule.
+    """
     import torch
+    require(type(fp32_accumulation) is bool, 'fp32_accumulation must be an explicit boolean')
     current = noise.clone()
     current[:, :1] = first
+    if fp32_accumulation:
+        # Promote after the original assignment so the initial condition has
+        # exactly the same numerical values, including its original dtype cast.
+        current = current.float()
+        fixed_first = current[:, :1].clone()
     for sigma, next_sigma in zip(sigmas[:-1], sigmas[1:]):
         timestep = (sigma * 1000).expand(current.shape[:2]).clone()
         timestep[:, 0] = 0
-        velocity, _ = model(current, conditional_dict=conditions, timestep=timestep,
+        model_input = current.to(dtype=noise.dtype) if fp32_accumulation else current
+        velocity, _ = model(model_input, conditional_dict=conditions, timestep=timestep,
                             replace_first_timestep_and_noise_latents=True)
-        current = current + (next_sigma - sigma) * velocity
-        current[:, :1] = first
+        if fp32_accumulation:
+            current = current + (next_sigma.float() - sigma.float()) * velocity.float()
+            current[:, :1] = fixed_first
+        else:
+            current = current + (next_sigma - sigma) * velocity
+            current[:, :1] = first
         require(bool(torch.isfinite(current).all()), 'nonfinite Action Euler state')
     return current
 
