@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "descriptive_frozen_demo_profile",
+  "profile_id": "demo-window6-v1",
+  "documented_on": "2026-09-13",
+  "executable_runtime_config": false,
+  "selection": {
+    "base_model": "Wan2.2-TI2V-5B",
+    "self_trained_checkpoint": "Action R005",
+    "checkpoint_stage": "action_teacher_lora_v1",
+    "checkpoint_step": 1040,
+    "checkpoint_sha256": "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee",
+    "checkpoint_hash_source": "historical_receipt_not_rehashed_for_this_document",
+    "parent_action_training_window_rgb_frames": 49,
+    "inference_mode": "window6",
+    "method": "action_teacher_window6_15s_ui_v1",
+    "requires_explicit_inference_mode_selection": true,
+    "preparation_cli_default_inference_mode": "chunked"
+  },
+  "inputs": {
+    "initial_image_count": 1,
+    "initial_image_color_space": "RGB",
+    "initial_image_width": 832,
+    "initial_image_height": 480,
+    "initial_origin": "decoded_condition_rgb",
+    "text_condition": "immutable_scene_static_text_and_original_cached_embedding",
+    "action_shape": [240, 8],
+    "action_dtype": "float32",
+    "action_values": [0, 1],
+    "action_keys": ["W", "A", "S", "D", "I", "J", "K", "L"],
+    "actions_fp32_raw_bytes_sha256": "ee1286433fba097e8f81474921be6014f5c3ee38256fb80bfcc0354d23247aaa",
+    "seed": 42,
+    "ground_truth_future_used": false
+  },
+  "inference_protocol": {
+    "window_seconds": [6, 6, 3],
+    "window_action_rows": [96, 96, 48],
+    "window_latent_frames": [25, 25, 13],
+    "window_decoded_rgb_frames": [97, 97, 49],
+    "window_output_rgb_frames": [97, 96, 48],
+    "duplicate_conditioning_frames_dropped": 2,
+    "endpoint_feedback": "reencode_previous_generated_float_RGB_endpoint_before_uint8_conversion",
+    "output_frame_zero": "submitted_initial_RGB",
+    "solver": "flow_euler",
+    "steps_per_window": 40,
+    "shift": 5.0,
+    "model_precision": "bfloat16",
+    "cfg": "none",
+    "noise_schedule": "five_successive_seeded_CPU_FP32_draws_keep_60_ordered_future_slots",
+    "future_noise_slots_per_window": [24, 24, 12],
+    "frozen_latent_noise_regression_protocol": false
+  },
+  "output": {
+    "frames": 241,
+    "raw_width": 832,
+    "raw_height": 480,
+    "hud_width": 832,
+    "hud_height": 528,
+    "playback_fps": 16,
+    "first_to_last_frame_seconds": 15,
+    "encoded_duration_seconds": 15.0625
+  },
+  "archived_observation": {
+    "single_scene_browser_generation_completed": true,
+    "browser_playback_verified": true,
+    "total_processing_seconds": 139.11102724075317,
+    "timing_scope": "one_historical_job_total_processing_time",
+    "current_code_benchmark": false,
+    "visual_observation": "character_retained_to_end_and_upward_sky_view_observed_with_blur_and_limb_outline_deformation"
+  },
+  "code_provenance": {
+    "historical_deployed_source_commit_from_independent_record": "40f35a1985a69c84c2e7cc9f33efec6eedf66ea3",
+    "historical_public_minimal_commit": "35e8c0b3e2e31a8dafc28e433b9508cf269b5dac",
+    "public_integration_baseline_before_document_update": "162a9ea32d832ad28e51e627a19db351ef6c31e5",
+    "original_generation_receipt_git_revision": "unknown",
+    "new_gpu_generation_verified_for_document_update": false,
+    "bitwise_reproduction_with_current_code_verified": false
+  },
+  "validation_boundary": {
+    "matched_zero_and_shuffled_action_controls_for_exact_selected_window6_complete": false,
+    "reliable_action_control_established": false,
+    "cross_scene_stability_established": false,
+    "long_horizon_stability_established": false,
+    "real_time_generation_established": false,
+    "model_and_input_assets_included": false,
+    "raw_operational_receipts_included": false
+  }
+}

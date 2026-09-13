@@ -1,5 +1,21 @@
 # Local asynchronous demo
 
+## Frozen demonstration profile (2026-09-13)
+
+The selected demonstration is **Action R005 step1040 + window6 (6+6+3s)**.
+See the [public frozen profile](../../docs/demo-window6-v1.md) for checkpoint
+identity, output geometry and limitations. Select `--inference-mode window6`
+explicitly in the preparation command below; the generic default remains
+`chunked` for backward compatibility. Later causal/history-noise experiments do
+not replace this profile. A recorded single-scenario run exists, but reliable
+action control, general long-horizon stability and real-time performance are not
+established. No model assets or generated video are shipped with the code.
+
+This document describes the service protocol, not permission to run on any
+machine. A deployment must satisfy its operator's current per-launch authority,
+GPU occupancy, storage and budget rules; an old standing-grant schema is not a
+new authorization. Leave the guard empty when only previewing the interface.
+
 This UI queues **new self-trained model runs**. It is not an upstream video
 gallery and does not claim real-time performance. Concrete backends support
 `action_teacher_lora_v1`, `causal_teacher_forcing_v1` and `longforcing_lite_v1`.
@@ -73,7 +89,8 @@ draws retain their60 ordered future slots, repartitioned24/24/12 without new
 draws. Each subsequent window re-encodes the preceding raw floating RGB endpoint
 in[-1,1], before uint8 conversion. Decoding97/97/49 frames and dropping the two
 repeated conditioning frames yields97+96+48=241 output frames; output frame0
-remains the submitted RGB. This is an inference-only candidate, not new training,
+remains the submitted RGB. This is the selected inference-only demonstration profile,
+not new training,
 the frozen regression protocol, or a general quality/control pass. The default
 `chunked` mode and browser request fields remain unchanged.
 
