@@ -4,7 +4,7 @@
 
 [观看所选网页 Demo](../assets/demos/action-r005-1040-window6.mp4) · [固定参数与复现边界](demo-window6-v1.md) · [机器可读结果](version-results.json)
 
-另见[README 新增四段配对展示](../README.md#demo-视频与版本对照)：复用固定Action1040权重，仅补生成同图文/同seed、不同动作的两组视频，不是新训练版本。下表的历史分数不适用于这些自定义动作样片。
+另见[完整四段配对实验](action-control-pairs.md)：复用固定Action1040权重，仅补生成同图文/同seed、不同动作的两组视频，不是新训练版本。[README](../README.md#demo-视频与版本对照)按画面表现选片，不是完整对照或平均质量。下表的历史分数不适用于这些自定义动作样片。
 
 ## 如何读版本名
 

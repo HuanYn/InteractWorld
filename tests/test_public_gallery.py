@@ -40,7 +40,7 @@ def test_gallery_selection_and_preview():
         assert len(payload) == preview["bytes"]
         assert hashlib.sha256(payload).hexdigest() == preview["sha256"]
 
-def test_readme_pairs_are_same_condition_with_changed_controls():
+def test_archived_pairs_are_same_condition_with_changed_controls():
     showcase = MANIFEST["paired_showcase"]
     assert showcase["checkpoint_step"] == 1040
     assert showcase["checkpoint_sha256"] == "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee"
@@ -48,8 +48,7 @@ def test_readme_pairs_are_same_condition_with_changed_controls():
     assert showcase["custom_action_ground_truth_available"] is False
     assert len(showcase["pairs"]) == 2
     images = []
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "Publication gate" not in readme
+    archive = (ROOT / "docs/action-control-pairs.md").read_text(encoding="utf-8")
     for pair in showcase["pairs"]:
         left, right = pair["clips"]
         for field in ("initial_sha256", "prompt", "seed", "source_episode_id", "noise_sha256_float32", "first_latent_sha256_float32"):
@@ -60,9 +59,25 @@ def test_readme_pairs_are_same_condition_with_changed_controls():
         for clip in pair["clips"]:
             assert clip["weighted_rgb_mse"] is None
             assert sum(segment["frames"] for segment in clip["action_segments"]) == 240
-            assert f"assets/demos/{clip['id']}-preview.gif" in readme
-            assert f"assets/demos/{clip['id']}.mp4" in readme
+            assert f"../assets/demos/{clip['id']}-preview.gif" in archive
+            assert f"../assets/demos/{clip['id']}.mp4" in archive
     assert images[0] != images[1]
+
+def test_homepage_is_visually_curated_not_a_hidden_pair_comparison():
+    selection = MANIFEST["homepage_selection"]
+    assert selection["visual_selection_not_average_quality"] is True
+    assert selection["full_videos_unmodified"] is True
+    assert selection["clip_ids"] == ["pair-b-forward-up", "pair-a-forward-left", "action-r005-1040-window6"]
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Publication gate" not in readme
+    assert "docs/action-control-pairs.md" in readme
+    assert "docs/demo-gallery.md" in readme
+    assert readme.count("-preview.gif") == 3
+    for clip_id in selection["clip_ids"]:
+        assert f"assets/demos/{clip_id}-preview.gif" in readme
+        assert f"assets/demos/{clip_id}.mp4" in readme
+    for clip_id in ("pair-a-backward-right", "pair-b-backward-down", "causal-clean60", "causal-recycling60"):
+        assert f"assets/demos/{clip_id}-preview.gif" not in readme
 
 def test_public_scores_do_not_claim_the_web_clip_passed():
     summary = json.loads((ROOT / "docs/version-results.json").read_text(encoding="utf-8"))

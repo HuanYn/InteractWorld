@@ -4,6 +4,21 @@
   "date": "2026-09-13",
   "publication_scope": "User-authorized own model-generated demonstration and negative-result clips; no model weights, datasets, raw logs or operational receipts.",
   "path_base": "repository_root",
+  "homepage_selection": {
+    "selected_on": "2026-09-13",
+    "clip_ids": [
+      "pair-b-forward-up",
+      "pair-a-forward-left",
+      "action-r005-1040-window6"
+    ],
+    "visual_selection_not_average_quality": true,
+    "full_videos_unmodified": true,
+    "no_new_generation": true,
+    "selection_basis": "Qualitative comparison of generated frames at 0, 3, 6, 9, 12 and 15 seconds, prioritizing recognizable people and scenery, less visible deformation and viewpoint variety. Not a quantitative quality evaluation.",
+    "paired_comparisons": "docs/action-control-pairs.md",
+    "historical_results": "docs/demo-gallery.md",
+    "notes": "All 17 original videos and the negative-result evidence remain available; only homepage presentation changed."
+  },
   "transforms": {
     "mp4": "Lossless H.264 stream copy into metadata-stripped faststart MP4; video frame order/count unchanged, no audio.",
     "png": "Single sampled generated frame resized to width416; not a quality metric.",
