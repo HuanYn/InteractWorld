@@ -138,7 +138,7 @@ CUDA_VISIBLE_DEVICES='' HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   --ignore=tests/test_export_public_repro.py
 ```
 
-CI 执行同一 CPU 测试范围；没有完整模型前向、GPU 训练或画质验收。
+以上测试按需在本地手动执行，不配置 GitHub 自动 CPU 测试流水线；没有完整模型前向、GPU 训练或画质验收。
 缺少 FFmpeg 时安装发行版的 `ffmpeg` 包，否则相关媒体测试会跳过。
 
 ## GPU 端到端复现

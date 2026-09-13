@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "04a48e1966d693b45f89345db564c315d9774423",
+  "source_revision": "e1f788ae9a960bd853ecccf74e6648db2aed6ca6",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -9,11 +9,6 @@
   "gpu_training_revalidated_for_export": false,
   "visual_quality_passed": false,
   "files": {
-    ".github/workflows/cpu-tests.yml": {
-      "sha256": "dbe791b8eb370ba2e9447ade50b6ed551d48b1defb2f695b150ebffc3c7ad21c",
-      "bytes": 1503,
-      "source_path": "public_repro/.github/workflows/cpu-tests.yml"
-    },
     ".gitignore": {
       "sha256": "046b413a06b1f202b3682cd09a3a1151ae22dbc014f5097d40090ca75d060a8d",
       "bytes": 5059,
@@ -35,8 +30,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "33e67b4d2fbc944bc9c495fdcb3418e3fcb7a4dab1ed3a70b933e2e596dc277e",
-      "bytes": 12556,
+      "sha256": "c7126c590d647a3028aa5932945071a681e6376ed791e4d11a001b3a3749ceac",
+      "bytes": 12587,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -165,8 +160,8 @@
       "source_path": "public_repro/docs/moba-inspired.md"
     },
     "docs/research-training-reference.md": {
-      "sha256": "1394c179fbab4e790502858ab05ac72bcbedc383e9b407b75fea4ee6a6104374",
-      "bytes": 21768,
+      "sha256": "d31924bffc67e81a8b69152a97a0fd5f5fd96025ebc8d167f19d1199812b328d",
+      "bytes": 21821,
       "source_path": "public_repro/docs/research-training-reference.md"
     },
     "docs/version-history.md": {
@@ -800,5 +795,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1779868
+  "source_bytes": 1778449
 }

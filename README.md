@@ -105,7 +105,7 @@ CUDA_VISIBLE_DEVICES='' HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   python -m pytest -q tests/test_demo_window6_action.py tests/test_demo_euler_precision.py
 ```
 
-[CI](.github/workflows/cpu-tests.yml)在 Linux 上执行更完整的 CPU 测试，包括媒体与服务契约；FFmpeg/FFprobe 用于媒体检查。CPU 测试使用小张量或测试替身，不代表真实 GPU 模型、画质或控制已验收。
+仓库不配置 GitHub 自动 CPU 测试流水线；保留本地测试，按需运行。FFmpeg/FFprobe 用于媒体检查。CPU 测试使用小张量或测试替身，不代表真实 GPU 模型、画质或控制已验收。GitHub Pages 仅负责公开视频播放器的发布。
 
 ## 准备固定版 Demo
 
