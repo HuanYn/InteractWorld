@@ -28,15 +28,41 @@ def test_selected_media_bytes_and_geometry(clip):
 
 def test_gallery_selection_and_preview():
     ids = [clip["id"] for clip in MANIFEST["clips"]]
-    assert len(ids) == len(set(ids)) == 13
+    assert len(ids) == len(set(ids)) == 17
+    historical = [clip_id for clip_id in ids if not clip_id.startswith("pair-")]
+    assert len(historical) == 13
     page = (ROOT / "docs/demo-gallery.html").read_text(encoding="utf-8")
     assert page.count("<video ") == 13
-    for clip_id in ids:
+    for clip_id in historical:
         assert f"../assets/demos/{clip_id}.mp4" in page
     for preview in MANIFEST["additional_previews"]:
         payload = (ROOT / preview["path"]).read_bytes()
         assert len(payload) == preview["bytes"]
         assert hashlib.sha256(payload).hexdigest() == preview["sha256"]
+
+def test_readme_pairs_are_same_condition_with_changed_controls():
+    showcase = MANIFEST["paired_showcase"]
+    assert showcase["checkpoint_step"] == 1040
+    assert showcase["checkpoint_sha256"] == "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee"
+    assert showcase["method"] == "action_teacher_window6_15s_ui_v1"
+    assert showcase["custom_action_ground_truth_available"] is False
+    assert len(showcase["pairs"]) == 2
+    images = []
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Publication gate" not in readme
+    for pair in showcase["pairs"]:
+        left, right = pair["clips"]
+        for field in ("initial_sha256", "prompt", "seed", "source_episode_id", "noise_sha256_float32", "first_latent_sha256_float32"):
+            assert left[field] == right[field]
+        assert left["seed"] == 42
+        assert left["actions_sha256"] != right["actions_sha256"]
+        images.append(left["initial_sha256"])
+        for clip in pair["clips"]:
+            assert clip["weighted_rgb_mse"] is None
+            assert sum(segment["frames"] for segment in clip["action_segments"]) == 240
+            assert f"assets/demos/{clip['id']}-preview.gif" in readme
+            assert f"assets/demos/{clip['id']}.mp4" in readme
+    assert images[0] != images[1]
 
 def test_public_scores_do_not_claim_the_web_clip_passed():
     summary = json.loads((ROOT / "docs/version-results.json").read_text(encoding="utf-8"))

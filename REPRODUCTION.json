@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "e50227f8a3bdd4d78cafeaffcdb55f5ff7730fe1",
+  "source_revision": "904a381e20855c154bcd8fef74859a5f0fe695a4",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,18 +30,18 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "19a77616a8c2ee5bdea0ba5568f3e48c1eebbe4376c757890725251a1340ecda",
-      "bytes": 10278,
+      "sha256": "c59e49c46340350c34edf7369a64a7c659231a78bf17425b4f3f620354e1fb84",
+      "bytes": 14918,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
-      "sha256": "59b5d0548266f5141ee54f137a54b6a545820ab8060f7971e3466c02ac9e7bea",
-      "bytes": 2765,
+      "sha256": "4e1ca9c9479d4d1877ba8feb41afb3076d777cbfabd7edfaeebb301372240356",
+      "bytes": 2788,
       "source_path": "public_repro/THIRD_PARTY_NOTICES.md"
     },
     "assets/demos/manifest.json": {
-      "sha256": "e04cd859bfcb2edc52b8bac512584684827242b4f4cd78b85e12de72f26bd58c",
-      "bytes": 11523,
+      "sha256": "4689b125891d41b5ef4ed2a8585c89254ae7f95169ff94eff1abe69011b13ae2",
+      "bytes": 34782,
       "source_path": "public_repro/assets/demos/manifest.json"
     },
     "configs/eval/rollout15s_v1.yaml": {
@@ -135,8 +135,8 @@
       "source_path": "public_repro/docs/demo-gallery.html"
     },
     "docs/demo-gallery.md": {
-      "sha256": "b10b9290793524f0d9004a661ce5e2110a87b1a7254ced3941c0f7c4cf0a4b54",
-      "bytes": 6342,
+      "sha256": "2f98a67b92f31079615cb367bd4da0169735f29a7b4d5ba90669defe06bd20a7",
+      "bytes": 6588,
       "source_path": "public_repro/docs/demo-gallery.md"
     },
     "docs/demo-window6-v1.json": {
@@ -160,8 +160,8 @@
       "source_path": "public_repro/docs/research-training-reference.md"
     },
     "docs/version-history.md": {
-      "sha256": "732bd853ed1765cf5b2dc85f3c4c7bb6a38406652b626a178025c222189d6c69",
-      "bytes": 13182,
+      "sha256": "e0192202b12bba8cac12929713802c82a4c0e526d5e7f130a1dc0c269458569d",
+      "bytes": 13447,
       "source_path": "public_repro/docs/version-history.md"
     },
     "docs/version-results.json": {
@@ -420,8 +420,8 @@
       "source_path": "tests/test_portable_paths.py"
     },
     "tests/test_public_gallery.py": {
-      "sha256": "3522d44d11fb53cd39516dc5caf863b5240532b1ce213a2cea59c9a4aaf6d367",
-      "bytes": 2199,
+      "sha256": "0847b461aa25b988b42c270ef99e69ba44895fe0c458440f8aa3e1f54979589e",
+      "bytes": 3625,
       "source_path": "public_repro/tests/test_public_gallery.py"
     },
     "tests/test_rollout15s.py": {
@@ -785,5 +785,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1736430
+  "source_bytes": 1766289
 }

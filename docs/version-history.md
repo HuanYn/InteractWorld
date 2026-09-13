@@ -4,6 +4,8 @@
 
 [观看所选网页 Demo](../assets/demos/action-r005-1040-window6.mp4) · [固定参数与复现边界](demo-window6-v1.md) · [机器可读结果](version-results.json)
 
+另见[README 新增四段配对展示](../README.md#demo-视频与版本对照)：复用固定Action1040权重，仅补生成同图文/同seed、不同动作的两组视频，不是新训练版本。下表的历史分数不适用于这些自定义动作样片。
+
 ## 如何读版本名
 
 R1 / R2 是早期 LongForcing-lite 的两轮运行修复，不是两套新模型。Action R003 / R004 / R005 / R007 是动作模型实验；Causal R006 是另一条因果适配分支。`step` 是该分支的 optimizer 更新计数：只加载父权重后从 0 开始，与恢复 optimizer、RNG、数据游标后继续训练不同。后面的 `clean60`、`recycling60`、`history-noise20` 按方法和步数命名，不与 R005 / R006 模型版本混用。

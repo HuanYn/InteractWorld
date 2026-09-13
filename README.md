@@ -6,13 +6,50 @@
 
 ## Demo 视频与版本对照
 
-[![R0051040 window6：完整轨迹的4fps抽帧预览](assets/demos/action-r005-1040-window6-preview.gif)](assets/demos/action-r005-1040-window6.mp4)
+### 当前最佳展示版：两组同输入、不同动作
 
-[完整16fps MP4](assets/demos/action-r005-1040-window6.mp4) · [13段视频画廊](docs/demo-gallery.md) · [每个版本改了什么、效果与指标](docs/version-history.md) · [精确结果JSON](docs/version-results.json)
+以下使用固定的 **Action R005 step1040＋window6**，不为这四段重新训练。每组内固定同一首图、提示词、seed、checkpoint 和采样参数，只改变动作与视角控制；两组使用不同场景。顶部保留首图和提示词，左侧显示 WASD，右侧显示方向键。按键表示模型收到的控制输入，不等于模型已准确执行。
 
-上面是当前选择的 **R0051040＋window6**，GIF只用于预览，完整MP4保留原视频帧。画廊同时公开R003/R004/R005/R006/R007、长窗适配、因果回收及历史噪声的代表性样片，包括失败结果。R003仅有真实3秒诊断，其余为15秒轨迹；并非所有版本使用相同场景、文本和采样条件，不能直接排成公平模型榜单。
+四段均于2026-09-13真实生成完成，完整241帧/16 FPS；没有重新训练、插帧或循环补时。配对内的图文、初始latent和噪声哈希一致，控制动作不同；详细绑定与实测值见[媒体清单](assets/demos/manifest.json)。
 
-下载仓库后可打开 [离线播放器](docs/demo-gallery.html) 连续查看，无需GPU或网页推理服务。GitHub若不直接播放MP4，请使用Raw/Download。样片对应历史实验，本次没有重新训练或生成。
+| 第一组：山地场景，同首图、同提示词 | 第一组：相同图文输入 |
+| --- | --- |
+| **前进＋左转视角：W＋←** | **后退＋右转视角：S＋→** |
+| [![第一组：前进与左转视角输入，15秒轨迹预览](assets/demos/pair-a-forward-left-preview.gif)](assets/demos/pair-a-forward-left.mp4) | [![第一组：后退与右转视角输入，15秒轨迹预览](assets/demos/pair-a-backward-right-preview.gif)](assets/demos/pair-a-backward-right.mp4) |
+| [完整 MP4](assets/demos/pair-a-forward-left.mp4) | [完整 MP4](assets/demos/pair-a-backward-right.mp4) |
+
+| 第二组：草地、丘陵与树木，同首图、同提示词 | 第二组：相同图文输入 |
+| --- | --- |
+| **前进＋抬头：W＋↑** | **后退＋低头：S＋↓** |
+| [![第二组：前进与抬头输入，15秒轨迹预览](assets/demos/pair-b-forward-up-preview.gif)](assets/demos/pair-b-forward-up.mp4) | [![第二组：后退与低头输入，15秒轨迹预览](assets/demos/pair-b-backward-down-preview.gif)](assets/demos/pair-b-backward-down.mp4) |
+| [完整 MP4](assets/demos/pair-b-forward-up.mp4) | [完整 MP4](assets/demos/pair-b-backward-down.mp4) |
+
+GIF 是压缩抽帧预览；点击查看保留原帧的完整 MP4，每段首尾帧跨度为15秒。两组是自定义控制的展示对比，没有对应的真实未来 GT，不报告其 RGB MSE，也不把历史样片分数移植到这些新视频上。固定 seed 有助于对照，但两对样片不能证明可靠控制或跨场景泛化。
+
+动作时序为五个3秒周期：移动1秒 → 移动＋视角键0.5秒 → 移动1.5秒，共240行真实动作输入。GIF为4 FPS、320像素宽的抽帧预览，不代表推理速度。四段通过与网页相同的window6后端离线批处理生成，未修改原网页的默认场景。第一组首图是既有conditioning latent解码图，第二组使用既有原始RGB首图；配对内的输入协议保持一致。
+
+| 本次样片 | 实际模型生成耗时 | 有限抽帧观察（0 / 7.5 / 15秒） |
+| --- | --- | --- |
+| 山地：W＋← | 130.60秒 | 人物和场景保留，末段细节与人形软化 |
+| 山地：S＋→ | 129.55秒 | 末段人物难辨、画面偏地面，稳定性仍不足 |
+| 草地：W＋↑ | 129.62秒 | 天空、树木、人物保留，末段肢体软化 |
+| 草地：S＋↓ | 129.81秒 | 草木可辨，后段人物变形并有半透明感 |
+
+四段峰值allocated显存均为12.57 GiB，每段监督器计时约137–138秒；以上模型生成耗时不含旧网页排队。这些样片展示真实差异，也暴露自定义动作下的质量限制，不作为“所有方向都稳定可控”的结论。
+
+### 关键版本：改动与实际结果
+
+README 只精选下列关键阶段，包含未成功的尝试；不再逐版铺满视频。这里的历史样片不全是同输入、同采样条件，不能作为公平模型排名。完整时间线及数值定义见[版本变化与指标](docs/version-history.md)。
+
+| 关键阶段 | 改动与已有结果 | 生成预览（点击打开完整 MP4） |
+| --- | --- | --- |
+| **Action R004 step780** | 将动态叙事提示词改为静态场景文本。匹配基线的三档 flow MSE 均值下降约1.20%，但后段仍有半透明、重影；flow 指标不是成片 RGB 分数。 | [![R004780：静态文本阶段的15秒样片](assets/demos/action-r004-780-15s-preview.gif)](assets/demos/action-r004-780-15s.mp4) |
+| **native97 resampled step120** | 训练窗增至97 RGB帧，并修复重复索引、噪声与时间步采样。单例 weighted RGB MSE：correct **.027365**，zero **.037809**，shuffled **.033990**；数值过线但人物仍偏细、边缘软化，未替换当前展示版。 | [![native97 resampled120：数值改善但仍有视觉问题](assets/demos/native97-resampled-120-preview.gif)](assets/demos/native97-resampled-120.mp4) |
+| **因果 clean60 / recycling60** | 同一起点比较干净历史与预测误差回收。两臂均在后段丢失人物，未观察到续写质量收益；没有匹配的 zero / shuffled RGB 分数。保留配对负结果，不包装成有效改进。 | clean60：[![干净历史对照：15秒失败样片](assets/demos/causal-clean60-preview.gif)](assets/demos/causal-clean60.mp4)<br>recycling60：[![误差回收：15秒失败样片](assets/demos/causal-recycling60-preview.gif)](assets/demos/causal-recycling60.mp4) |
+
+[完整13段历史视频归档](docs/demo-gallery.md) · [各版本改动与指标](docs/version-history.md) · [精确结果 JSON](docs/version-results.json) · [离线播放器](docs/demo-gallery.html)
+
+历史归档包括 R003/R004/R005/R006/R007、长窗适配、因果回收及历史噪声样片；R003 是真实3秒诊断，其余为15秒轨迹。下载仓库后可打开离线播放器，无需 GPU 或网页推理服务。GitHub 若不直接播放 MP4，请使用 Raw/Download。
 
 ## 当前固定展示版
 
@@ -53,7 +90,7 @@
 
 ## 快速开始：先做 CPU 检查
 
-仓库提供最小源码、配置、测试和13段明确选定的自训生成样片，不包含模型权重、原始数据集视频、特征缓存、运行日志或私人部署/授权记录。克隆后可以运行 CPU 契约测试；**不能在缺少模型资产时一键生成上述视频**。
+仓库提供最小源码、配置、测试及明确选定的自训生成样片：13段历史归档，另有上述四段配对展示。不包含模型权重、原始数据集视频、特征缓存、运行日志或私人部署/授权记录。克隆后可以运行 CPU 契约测试；**不能在缺少模型资产时一键生成上述视频**。
 
 以下为 Linux Bash 示例。参考 CPU 环境为 Python3.12，依赖以仓库文件为准；虚拟环境、包缓存和后续训练资产应放在自己的可写数据盘。
 

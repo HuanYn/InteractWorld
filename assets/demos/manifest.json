@@ -7,7 +7,7 @@
   "transforms": {
     "mp4": "Lossless H.264 stream copy into metadata-stripped faststart MP4; video frame order/count unchanged, no audio.",
     "png": "Single sampled generated frame resized to width416; not a quality metric.",
-    "gif": "Full-trajectory sampled preview at4fps width416 with128-color palette; not the model generation FPS."
+    "gif": "Chronological sampled previews at4fps with128-color palette; width is recorded per preview (320 for curatedREADME,416 for the historicalwindow6 preview). Not model generation FPS."
   },
   "timing_note": "The model trajectories span3 or15 seconds between first and last frames. Container duration can round slightly during remux; use the measured per-file metadata below.",
   "metric_note": "Historical scores use original RAW outputs, not HUD, posters or GIF. Selected window6 web-clip score remains unavailable.",
@@ -258,9 +258,93 @@
       "audio_included": false,
       "encoding": "H.264 stream copy; metadata-stripped MP4",
       "first_to_last_frame_seconds": 15
+    },
+    {
+      "id": "pair-a-forward-left",
+      "video": "assets/demos/pair-a-forward-left.mp4",
+      "poster": "assets/demos/pair-a-forward-left.png",
+      "source_sha256": "dde082b5fa4fb152461e06ae7861a35d79c21628c23cc5f116924c0299dd02b5",
+      "video_sha256": "c6d38a958d57808cf75bf20ab5ac99f36871510514bf17bfb5620d238260ef5c",
+      "poster_sha256": "1fe577634968852bddd36e25e707aac5a466e3b8203e103c93f076777a2bc371",
+      "video_bytes": 6082455,
+      "poster_bytes": 148175,
+      "width": 832,
+      "height": 528,
+      "frames": 241,
+      "fps": "16/1",
+      "duration_seconds": 15.0625,
+      "poster_time_seconds": 7.5,
+      "audio_included": false,
+      "encoding": "H.264 stream copy; metadata-stripped MP4",
+      "first_to_last_frame_seconds": 15
+    },
+    {
+      "id": "pair-a-backward-right",
+      "video": "assets/demos/pair-a-backward-right.mp4",
+      "poster": "assets/demos/pair-a-backward-right.png",
+      "source_sha256": "acb408b6923e2581fd077d5d09c356feddf2e4fd2a1579164d7438608994327d",
+      "video_sha256": "f609723bfd210eb552356ca577d4af73a136de3330565557b098f47e148ae4b2",
+      "poster_sha256": "28aac3b9c2ddde498c088e4b7a409fd219fb6299accc554528ad9cb6aa62641c",
+      "video_bytes": 3735654,
+      "poster_bytes": 152544,
+      "width": 832,
+      "height": 528,
+      "frames": 241,
+      "fps": "16/1",
+      "duration_seconds": 15.062012,
+      "poster_time_seconds": 7.5,
+      "audio_included": false,
+      "encoding": "H.264 stream copy; metadata-stripped MP4",
+      "first_to_last_frame_seconds": 15
+    },
+    {
+      "id": "pair-b-forward-up",
+      "video": "assets/demos/pair-b-forward-up.mp4",
+      "poster": "assets/demos/pair-b-forward-up.png",
+      "source_sha256": "b08e4a1301f7cf9a3ab04cba9e5dd39d63b1db2d714fa770773bbe1137504722",
+      "video_sha256": "be12d3800626acec48981d3d053f5461169994c9fa9fb15a7caceceb7e058ac4",
+      "poster_sha256": "d1eecc540160e651b5dadaed3af9ff90512870731f992fb6e7244bbf5b1d37f2",
+      "video_bytes": 10112470,
+      "poster_bytes": 185455,
+      "width": 832,
+      "height": 528,
+      "frames": 241,
+      "fps": "16/1",
+      "duration_seconds": 15.0625,
+      "poster_time_seconds": 7.5,
+      "audio_included": false,
+      "encoding": "H.264 stream copy; metadata-stripped MP4",
+      "first_to_last_frame_seconds": 15
+    },
+    {
+      "id": "pair-b-backward-down",
+      "video": "assets/demos/pair-b-backward-down.mp4",
+      "poster": "assets/demos/pair-b-backward-down.png",
+      "source_sha256": "39d182d1934794c38753bcb96994dd58288bd3a5848f59e9b0aa01e10a629769",
+      "video_sha256": "47bdd3dce1473884a3d53e8153cb5532802becf099eb01e8f548670928a41557",
+      "poster_sha256": "d8106ad7909ab7812fc3e2031a16e28cff16b5dc1b2aa0a72d9ba4f3abb37f88",
+      "video_bytes": 6746248,
+      "poster_bytes": 177892,
+      "width": 832,
+      "height": 528,
+      "frames": 241,
+      "fps": "16/1",
+      "duration_seconds": 15.0625,
+      "poster_time_seconds": 7.5,
+      "audio_included": false,
+      "encoding": "H.264 stream copy; metadata-stripped MP4",
+      "first_to_last_frame_seconds": 15
     }
   ],
   "additional_previews": [
+    {
+      "path": "assets/demos/action-r004-780-15s-preview.gif",
+      "sha256": "fa3c70a4ae86af70325b986037a008481f25e05cf66032fe9b001ce827dc688c",
+      "bytes": 2827590,
+      "source_media_id": "action-r004-780-15s",
+      "preview_fps": 4,
+      "preview_width": 320
+    },
     {
       "path": "assets/demos/action-r005-1040-window6-preview.gif",
       "sha256": "d2c1201c6381293277adc6f795fda5b7246aa3e909689159b7f010e6a6a136b0",
@@ -268,9 +352,577 @@
       "source_media_id": "action-r005-1040-window6",
       "preview_fps": 4,
       "preview_width": 416
+    },
+    {
+      "path": "assets/demos/causal-clean60-preview.gif",
+      "sha256": "311ccb5ea46867d2bb1426a333c5f60578bb2ceb8021f11f271dddf795c6ec7a",
+      "bytes": 2395944,
+      "source_media_id": "causal-clean60",
+      "preview_fps": 4,
+      "preview_width": 320
+    },
+    {
+      "path": "assets/demos/causal-recycling60-preview.gif",
+      "sha256": "67cd24127a243d2be657cff95a58cf4d3a45e5601d973074f426a505e5d7ec84",
+      "bytes": 2493986,
+      "source_media_id": "causal-recycling60",
+      "preview_fps": 4,
+      "preview_width": 320
+    },
+    {
+      "path": "assets/demos/native97-resampled-120-preview.gif",
+      "sha256": "d96e201f2edb2a24bb016047e91096e8a9a097477360b5acd9bf8c64872db20e",
+      "bytes": 2661544,
+      "source_media_id": "native97-resampled-120",
+      "preview_fps": 4,
+      "preview_width": 320
+    },
+    {
+      "path": "assets/demos/pair-a-backward-right-preview.gif",
+      "sha256": "5f57b5238db13fa1e6ee1dc36ee2038e984417ef4255a4bd6437c1e5a50464f0",
+      "bytes": 2834193,
+      "source_media_id": "pair-a-backward-right",
+      "preview_fps": 4,
+      "preview_width": 320
+    },
+    {
+      "path": "assets/demos/pair-a-forward-left-preview.gif",
+      "sha256": "d42567d78f6b0418f284ae165d8a8d22f7137ee8d733068ee2855e0e0915876d",
+      "bytes": 2684292,
+      "source_media_id": "pair-a-forward-left",
+      "preview_fps": 4,
+      "preview_width": 320
+    },
+    {
+      "path": "assets/demos/pair-b-backward-down-preview.gif",
+      "sha256": "ecd51cb8dafebd896c14e470fe1c789b4b2809089b247368bda0fd4f03ab3064",
+      "bytes": 2227539,
+      "source_media_id": "pair-b-backward-down",
+      "preview_fps": 4,
+      "preview_width": 320
+    },
+    {
+      "path": "assets/demos/pair-b-forward-up-preview.gif",
+      "sha256": "e5c27867a34db9a7f8605a675cad9fa1d4f69946a00c75f32be9998680a026a8",
+      "bytes": 2300910,
+      "source_media_id": "pair-b-forward-up",
+      "preview_fps": 4,
+      "preview_width": 320
     }
   ],
   "weights_included": false,
   "dataset_videos_included": false,
-  "private_operational_records_included": false
+  "private_operational_records_included": false,
+  "paired_showcase": {
+    "generated_on": "2026-09-13",
+    "checkpoint_step": 1040,
+    "checkpoint_sha256": "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee",
+    "method": "action_teacher_window6_15s_ui_v1",
+    "entry": "isolated_offline_batch_using_same_unchanged_WEB_backend;not_new_HTTP_jobs",
+    "windows_seconds": [
+      6,
+      6,
+      3
+    ],
+    "sampler": {
+      "solver": "flow_euler",
+      "steps_per_window": 40,
+      "shift": 5,
+      "cfg": "none",
+      "precision": "bf16"
+    },
+    "only_action_tensor_changed_within_pair": true,
+    "custom_action_ground_truth_available": false,
+    "retrained_for_showcase": false,
+    "realtime": false,
+    "reliable_control_passed": false,
+    "frame_review_scope": "Limited CPU inspection of originalRAWframes0,120,240; no exhaustiveperframe semanticcontrol test.",
+    "timing_scope": "Model generation and independentrunner wall times are recorded separately; neither is oldwebqueue timing. Peak istorchCUDA allocatedbytes.",
+    "pairs": [
+      {
+        "id": "A",
+        "scene_description": "Mountain slope",
+        "clips": [
+          {
+            "id": "pair-a-forward-left",
+            "initial_sha256": "b2821162f9ab9371b06c591acd70745b2e96d542d5dcebd821223ce99ff9b221",
+            "source_episode_id": "019285161503b1d49c72e81863eb17ef",
+            "initial_origin": "decoded_condition_rgb",
+            "prompt": "A desolate, rain-slicked mountain slope dominates the scene, composed of coarse gray scree, fractured basalt boulders, and sparse tufts of resilient green grass clinging to crevices; the architecture is natural and rugged, with layered rock strata exposed in jagged cliffs under an overcast, diffused sky that casts soft, cool-toned lighting across the damp surfaces. A solitary figure stands amid the terrain—wearing a dark, weathered coat, trousers, and boots, with long hair partially obscuring their face—positioned as a static element within the vast, somber landscape. The materials convey raw geological texture: wet stone glistens subtly, gravel shifts underfoot in implied weight, and fabric appears thick and worn, contributing to a muted palette of charcoal, slate, and olive greens that reinforces the atmosphere of isolation and quiet decay.",
+            "seed": 42,
+            "actions_sha256": "c9278d272d7acf0fbfed0176d504b44c26a4ba3eb11a3e777a75418b96938e24",
+            "action_segments": [
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "J"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "J"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "J"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "J"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "J"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              }
+            ],
+            "noise_sha256_float32": [
+              "a5464086b10298db73a58e0f014482619aa4082ed45f32edb0aa2be5c4da8bd0",
+              "60fa3d219c0e1927fdf1e472a529254173c3ddb82fe2bee0edfdd1b48cbd1d03",
+              "3450d4cc419681ad682517eb682abd481f41b24711e37db1bd052adb7d3222ca"
+            ],
+            "first_latent_sha256_float32": "2822c8cc84046030159e02fd167cf797bdf0047b6b4f2d55e772b838332f935c",
+            "model_generation_seconds": 130.60100580001017,
+            "runner_elapsed_seconds": 136.6067663319991,
+            "peak_vram_bytes": 13498518016,
+            "raw_video_sha256": "62ddac381b10f095fcc27ba5f7eaca9edd08e39391adc71281a5187dbda98d71",
+            "weighted_rgb_mse": null,
+            "limited_visual_observation": "0、7.5、15秒抽帧中人物和山地仍可辨；末段人形与细节软化。"
+          },
+          {
+            "id": "pair-a-backward-right",
+            "initial_sha256": "b2821162f9ab9371b06c591acd70745b2e96d542d5dcebd821223ce99ff9b221",
+            "source_episode_id": "019285161503b1d49c72e81863eb17ef",
+            "initial_origin": "decoded_condition_rgb",
+            "prompt": "A desolate, rain-slicked mountain slope dominates the scene, composed of coarse gray scree, fractured basalt boulders, and sparse tufts of resilient green grass clinging to crevices; the architecture is natural and rugged, with layered rock strata exposed in jagged cliffs under an overcast, diffused sky that casts soft, cool-toned lighting across the damp surfaces. A solitary figure stands amid the terrain—wearing a dark, weathered coat, trousers, and boots, with long hair partially obscuring their face—positioned as a static element within the vast, somber landscape. The materials convey raw geological texture: wet stone glistens subtly, gravel shifts underfoot in implied weight, and fabric appears thick and worn, contributing to a muted palette of charcoal, slate, and olive greens that reinforces the atmosphere of isolation and quiet decay.",
+            "seed": 42,
+            "actions_sha256": "42dffaaf94e4d2846094bd81f6e3db43b571df5c43050f134e904b5c7066f566",
+            "action_segments": [
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "L"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "L"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "L"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "L"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "L"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              }
+            ],
+            "noise_sha256_float32": [
+              "a5464086b10298db73a58e0f014482619aa4082ed45f32edb0aa2be5c4da8bd0",
+              "60fa3d219c0e1927fdf1e472a529254173c3ddb82fe2bee0edfdd1b48cbd1d03",
+              "3450d4cc419681ad682517eb682abd481f41b24711e37db1bd052adb7d3222ca"
+            ],
+            "first_latent_sha256_float32": "2822c8cc84046030159e02fd167cf797bdf0047b6b4f2d55e772b838332f935c",
+            "model_generation_seconds": 129.5488762530149,
+            "runner_elapsed_seconds": 135.25133428099798,
+            "peak_vram_bytes": 13498518016,
+            "raw_video_sha256": "5e2e97db38758ce8348684907a21c2d5d88314c7915a4ecf1bddd89148b420ff",
+            "weighted_rgb_mse": null,
+            "limited_visual_observation": "7.5秒仍可见人物，末帧人物难辨且画面偏地面；不宣称稳定控制。"
+          }
+        ]
+      },
+      {
+        "id": "B",
+        "scene_description": "Grassland, hills and conifer trees",
+        "clips": [
+          {
+            "id": "pair-b-forward-up",
+            "initial_sha256": "ef367e92cf573846dccba089597a5a35b1f2dc2783578f0f63b446bfccc92c86",
+            "source_episode_id": "009b81104345761d84612406c8f74c91",
+            "initial_origin": "source_rgb",
+            "prompt": "This is an expansive outdoor natural landscape featuring rolling grassy hills, scattered coniferous trees, and exposed sedimentary rock formations with layered earth tones of ochre, beige, and gray. The scene is illuminated by bright, diffused daylight under a partly cloudy sky, casting soft shadows and highlighting the rich textures of tall swaying grasses, rough-hewn boulders, and distant snow-capped mountain peaks on the horizon. The aesthetic evokes a rugged, untamed frontier environment—likely late 19th-century American West—with a painterly realism in its color palette dominated by verdant greens, dusty browns, and cool cerulean blues, creating a serene yet imposing atmosphere.",
+            "seed": 42,
+            "actions_sha256": "93b44e3fef27a0f36042ec4734dd877b56009871837b4ff44e4f462e48b4142a",
+            "action_segments": [
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "I"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "I"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "I"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "I"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "W"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "W",
+                  "I"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "W"
+                ]
+              }
+            ],
+            "noise_sha256_float32": [
+              "a5464086b10298db73a58e0f014482619aa4082ed45f32edb0aa2be5c4da8bd0",
+              "60fa3d219c0e1927fdf1e472a529254173c3ddb82fe2bee0edfdd1b48cbd1d03",
+              "3450d4cc419681ad682517eb682abd481f41b24711e37db1bd052adb7d3222ca"
+            ],
+            "first_latent_sha256_float32": "386d74e1a268a5df27bca4032c1224d402835a80b2b98f8863e5ef7e49e80260",
+            "model_generation_seconds": 129.61897542100633,
+            "runner_elapsed_seconds": 135.73377075602184,
+            "peak_vram_bytes": 13498518016,
+            "raw_video_sha256": "07a034353f7c6587fb38d199502351aaf119739730ca343b9afe877a9022231a",
+            "weighted_rgb_mse": null,
+            "limited_visual_observation": "0、7.5、15秒抽帧中天空、树木和人物保留；末段肢体与纹理软化。"
+          },
+          {
+            "id": "pair-b-backward-down",
+            "initial_sha256": "ef367e92cf573846dccba089597a5a35b1f2dc2783578f0f63b446bfccc92c86",
+            "source_episode_id": "009b81104345761d84612406c8f74c91",
+            "initial_origin": "source_rgb",
+            "prompt": "This is an expansive outdoor natural landscape featuring rolling grassy hills, scattered coniferous trees, and exposed sedimentary rock formations with layered earth tones of ochre, beige, and gray. The scene is illuminated by bright, diffused daylight under a partly cloudy sky, casting soft shadows and highlighting the rich textures of tall swaying grasses, rough-hewn boulders, and distant snow-capped mountain peaks on the horizon. The aesthetic evokes a rugged, untamed frontier environment—likely late 19th-century American West—with a painterly realism in its color palette dominated by verdant greens, dusty browns, and cool cerulean blues, creating a serene yet imposing atmosphere.",
+            "seed": 42,
+            "actions_sha256": "3cce525e3c1006b705090036e321a5fc9b8aa886fdf4d1f37eb06652ee77cfaf",
+            "action_segments": [
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "K"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "K"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "K"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "K"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 16,
+                "keys": [
+                  "S"
+                ]
+              },
+              {
+                "frames": 8,
+                "keys": [
+                  "S",
+                  "K"
+                ]
+              },
+              {
+                "frames": 24,
+                "keys": [
+                  "S"
+                ]
+              }
+            ],
+            "noise_sha256_float32": [
+              "a5464086b10298db73a58e0f014482619aa4082ed45f32edb0aa2be5c4da8bd0",
+              "60fa3d219c0e1927fdf1e472a529254173c3ddb82fe2bee0edfdd1b48cbd1d03",
+              "3450d4cc419681ad682517eb682abd481f41b24711e37db1bd052adb7d3222ca"
+            ],
+            "first_latent_sha256_float32": "386d74e1a268a5df27bca4032c1224d402835a80b2b98f8863e5ef7e49e80260",
+            "model_generation_seconds": 129.8098052109999,
+            "runner_elapsed_seconds": 135.6388719000097,
+            "peak_vram_bytes": 13498518016,
+            "raw_video_sha256": "0b52598714349070998c64cf9763f68bc5b6326ad87fb26ce882fbc8d3a5a2fe",
+            "weighted_rgb_mse": null,
+            "limited_visual_observation": "后段人物轮廓变形并有半透明感；草木场景仍可辨。"
+          }
+        ]
+      }
+    ]
+  }
 }
