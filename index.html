@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="InterActWorld 自训动作条件视频生成：完整 Demo 在线播放器。">
+  <title>InterActWorld · 完整视频</title>
+  <style>
+    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#10141c;color:#e9edf5;font:16px/1.6 system-ui,sans-serif}main{max-width:1100px;margin:auto;padding:30px 22px}a{color:#a9d2ff}h1{margin:4px 0 8px;font-size:clamp(26px,5vw,38px)}h2{font-size:19px;margin:24px 0 10px}p{color:#bac5d8}.eyebrow{letter-spacing:.12em;color:#89a4c2;font-size:12px}video{display:block;width:100%;aspect-ratio:832/528;background:#000;border-radius:10px}#player-title{margin-bottom:4px}#status{min-height:26px;font-size:14px;margin:8px 0}.actions{display:flex;gap:18px;flex-wrap:wrap}.choices{display:flex;flex-wrap:wrap;gap:9px}.choices a{background:#1b2636;border:1px solid #34445a;border-radius:8px;padding:9px 13px;text-decoration:none}.choices a[aria-current=true]{background:#294464;border-color:#8cc6ff;color:white}a:focus-visible,summary:focus-visible{outline:3px solid #9dd1ff;outline-offset:3px}details{border-top:1px solid #34445a;margin-top:24px;padding-top:16px}summary{cursor:pointer;font-size:18px}footer{border-top:1px solid #34445a;margin-top:26px;padding-top:15px;font-size:14px;color:#98a8bd}
+  </style>
+</head>
+<body><main>
+  <header><span class="eyebrow">INTERACTWORLD / FULL VIDEO PLAYER</span><h1>完整生成视频</h1><p>点击视频中的 ▶ 开始播放，可拖动进度、调整倍速及全屏。这里播放的是已生成的原始帧视频，不是 GIF，也不是实时生成。</p></header>
+  <h2 id="player-title">草地 · 前进＋抬头</h2>
+  <p id="clip-note">精选 Action R005 step1040＋window6；15秒。末段肢体和纹理仍会软化。</p>
+  <video id="player" controls playsinline preload="metadata" poster="assets/demos/pair-b-forward-up.png" aria-label="完整生成视频">
+    <source src="assets/demos/pair-b-forward-up.mp4" type="video/mp4">
+    浏览器不支持 HTML 视频，请使用下方下载链接。
+  </video>
+  <p id="status" role="status" aria-live="polite">正在加载完整视频…</p>
+  <nav class="actions" aria-label="视频操作"><a id="download" href="assets/demos/pair-b-forward-up.mp4" download>下载当前 MP4</a><a href="https://github.com/HuanYn/InteractWorld#demo-视频与版本对照">项目 README</a><a href="https://github.com/HuanYn/InteractWorld/blob/main/docs/action-control-pairs.md">配对条件与实验记录</a></nav>
+  <h2>精选展示</h2><div id="featured" class="choices" aria-label="精选视频"></div>
+  <details id="pair-details"><summary>完整动作配对 · 4 段</summary><p>保留两个未入选首页的反向控制。每组同图文、seed与模型，仅改变控制输入。</p><div id="pairs" class="choices" aria-label="配对视频"></div></details>
+  <details id="history-details"><summary>历史实验 · 包含失败结果</summary><p>历史配置不同，不直接混作公平消融。R003 为3秒，其余轨迹15秒。</p><div id="history" class="choices" aria-label="历史视频"></div><p><a href="docs/demo-gallery.html">历史多视频播放器</a> · <a href="https://github.com/HuanYn/InteractWorld/blob/main/docs/version-history.md">版本改动与指标</a></p></details>
+  <noscript><p>未启用 JavaScript：上方草地视频仍可直接播放。其他历史视频请打开<a href="docs/demo-gallery.html">历史播放器</a>。</p></noscript>
+  <footer>人工精选不代表平均质量；未裁掉后半段、插帧或循环补时。所有原视频及负结果保留。异步原型，不宣称可靠动作控制或实时交互。</footer>
+</main>
+<script>
+  "use strict";
+  const clips = [
+    {id:"pair-b-forward-up",title:"草地 · 前进＋抬头",note:"精选 Action R005 step1040＋window6；15秒。末段肢体和纹理仍会软化。"},
+    {id:"pair-a-forward-left",title:"山地 · 前进＋左转",note:"精选 Action R005 step1040＋window6；15秒。人物和山体可辨，后段细节软化。"},
+    {id:"action-r005-1040-window6",title:"原 window6 · 视角切换与移动",note:"精选 Action R005 step1040；6+6+3秒续写。人物仍有软变形。"},
+    {id:"pair-a-backward-right",title:"山地 · 后退＋右转",note:"完整配对中的较差结果：末段人物难辨、画面偏地面。"},
+    {id:"pair-b-backward-down",title:"草地 · 后退＋低头",note:"完整配对中的较差结果：后段人物变形并有半透明感。"},
+    {id:"action-r003-240-3s",title:"R003 · step240 · 3秒",note:"Adapter 早期诊断，仍有拖影。"},
+    {id:"action-r004-780-15s",title:"R004 · step780",note:"静态场景文本；后段半透明和重影仍在。"},
+    {id:"action-r005-500-15s",title:"R005 · step500",note:"重新启用 LoRA；人物仍模糊。"},
+    {id:"action-r005-1040-chunked",title:"R005 · step1040 · 5×3秒",note:"旧短窗续写；后段模糊、变形。"},
+    {id:"action-r005-1040-joint61",title:"R005 · step1040 · joint61",note:"整段联合推理；抬头退步，未采用。"},
+    {id:"action-r007-260",title:"R007 · step260",note:"49帧重采样分支；视角偏地面、画面变暗。"},
+    {id:"causal-r006-1280",title:"Causal R006 · step1280",note:"因果训练分支，sliding-window 输出；后段严重变形。"},
+    {id:"longforcing-lite-80",title:"LongForcing-lite · step80 · 失败",note:"非 DMD；另一场景、seed，明显纹理化。"},
+    {id:"native97-resampled-120",title:"native97 resampled · step120",note:"连续97帧训练；人物偏细、边缘软化，未替换展示版。"},
+    {id:"causal-clean60",title:"Causal clean · step60",note:"干净历史续训；后段人物消失。"},
+    {id:"causal-recycling60",title:"Causal recycling · step60 · 失败",note:"历史误差回收；约6秒丢人、后段拉丝。"},
+    {id:"history-noise20",title:"History-noise · step20 · 失败",note:"历史加噪分支；6秒丢人、15秒斜纹。"}
+  ];
+  const player = document.getElementById("player");
+  const status = document.getElementById("status");
+  function addChoice(group, clip) {
+    const link = document.createElement("a");
+    link.href = "#" + clip.id;
+    link.textContent = clip.title;
+    link.dataset.clip = clip.id;
+    document.getElementById(group).appendChild(link);
+  }
+  clips.slice(0,3).forEach(clip => addChoice("featured", clip));
+  ["pair-a-forward-left","pair-a-backward-right","pair-b-forward-up","pair-b-backward-down"].forEach(id => addChoice("pairs", clips.find(clip => clip.id === id)));
+  clips.filter(clip => !clip.id.startsWith("pair-")).forEach(clip => addChoice("history", clip));
+  function selectClip() {
+    const requested = location.hash.slice(1);
+    const clip = clips.find(item => item.id === requested) || clips[0];
+    const source = "assets/demos/" + clip.id + ".mp4";
+    document.getElementById("player-title").textContent = clip.title;
+    document.getElementById("clip-note").textContent = clip.note;
+    document.title = clip.title + " · InterActWorld";
+    document.getElementById("download").href = source;
+    document.querySelectorAll("[data-clip]").forEach(link => link.setAttribute("aria-current", String(link.dataset.clip === clip.id)));
+    if (clips.indexOf(clip) >= 3) document.getElementById(clip.id.startsWith("pair-") ? "pair-details" : "history-details").open = true;
+    if (player.dataset.clip === clip.id) return;
+    player.pause();
+    player.dataset.clip = clip.id;
+    player.poster = "assets/demos/" + clip.id + ".png";
+    status.textContent = "正在加载完整视频…";
+    player.querySelector("source").src = source;
+    player.load();
+  }
+  player.addEventListener("loadedmetadata", () => { status.textContent = "完整视频已就绪 · " + player.duration.toFixed(2) + "秒 · 点击 ▶ 播放"; });
+  player.addEventListener("error", () => { status.textContent = "视频未能加载。请刷新重试，或用“下载当前 MP4”在本地播放器打开。"; });
+  window.addEventListener("hashchange", selectClip);
+  selectClip();
+</script>
+</body></html>

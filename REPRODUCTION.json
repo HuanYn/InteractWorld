@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "fd32647ae3f6b1890ba40eef6b9a7fdcfbf71ba6",
+  "source_revision": "04a48e1966d693b45f89345db564c315d9774423",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -19,6 +19,11 @@
       "bytes": 5059,
       "source_path": ".gitignore"
     },
+    ".nojekyll": {
+      "sha256": "5231f8b406db0495d63356622fc1c798b241a55b53c185a0f6e67fa6c24f65fb",
+      "bytes": 71,
+      "source_path": "public_repro/.nojekyll"
+    },
     "LICENSE": {
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
       "bytes": 11357,
@@ -30,8 +35,8 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "97955323bdf64ca5e1f862d04e8f521e3ac8218b96b956a8038e890bb07a0dcb",
-      "bytes": 12301,
+      "sha256": "33e67b4d2fbc944bc9c495fdcb3418e3fcb7a4dab1ed3a70b933e2e596dc277e",
+      "bytes": 12556,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
@@ -125,8 +130,8 @@
       "source_path": "configs/train/longforcing_lite_v1.yaml"
     },
     "docs/action-control-pairs.md": {
-      "sha256": "c14389ab7668956d4959c2b263e89811f596161d9df93907ed3fe4f44b29bb38",
-      "bytes": 3793,
+      "sha256": "c6c753a4ba5ceaa992ae064f7d0e31a14b6e323a782862ce96c8b0483fed6e50",
+      "bytes": 4066,
       "source_path": "public_repro/docs/action-control-pairs.md"
     },
     "docs/context-error-recycling.md": {
@@ -140,8 +145,8 @@
       "source_path": "public_repro/docs/demo-gallery.html"
     },
     "docs/demo-gallery.md": {
-      "sha256": "932249cb213f75e6a0656f34995fcc0e8555e65cb60989357eded7eed48655ae",
-      "bytes": 6669,
+      "sha256": "e98fa094578a8e3bdcf76857c41211f34ef945a5e396c278fe588e64f0716124",
+      "bytes": 7509,
       "source_path": "public_repro/docs/demo-gallery.md"
     },
     "docs/demo-window6-v1.json": {
@@ -165,14 +170,19 @@
       "source_path": "public_repro/docs/research-training-reference.md"
     },
     "docs/version-history.md": {
-      "sha256": "781eaa976f2bd5563c481afad0f5467ba644d486e7f6b7b1a8a8f44d30a76b96",
-      "bytes": 13533,
+      "sha256": "612aacdf19b2dce7bef08044178582e2182e58b6eea714d9f46d99a1271d7197",
+      "bytes": 13833,
       "source_path": "public_repro/docs/version-history.md"
     },
     "docs/version-results.json": {
       "sha256": "044128abea0297c85fc0188fe158c4acd640c2b44b638dec63ef837431c32e53",
       "bytes": 25861,
       "source_path": "public_repro/docs/version-results.json"
+    },
+    "index.html": {
+      "sha256": "ac46a833427c21952df799aae7a6bcf52963975647950d1a220a833f890c1707",
+      "bytes": 8208,
+      "source_path": "public_repro/index.html"
     },
     "pipeline/__init__.py": {
       "sha256": "03cb4c711cdc92cd01e0a8b3ef12da0efd3fd97b6d06d403c6c1a238acbca0f1",
@@ -425,8 +435,8 @@
       "source_path": "tests/test_portable_paths.py"
     },
     "tests/test_public_gallery.py": {
-      "sha256": "8a9e3dbae97ee51bbcba3c8d4f48a1c60c5c54b94ec36ab8221448a087b3c3cc",
-      "bytes": 4546,
+      "sha256": "1826fca44e4eb15fac1c9a700f68c46b3567abf7f005a6cf34e0456fefe60f9b",
+      "bytes": 5150,
       "source_path": "public_repro/tests/test_public_gallery.py"
     },
     "tests/test_rollout15s.py": {
@@ -790,5 +800,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1769317
+  "source_bytes": 1779868
 }

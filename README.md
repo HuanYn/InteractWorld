@@ -14,27 +14,27 @@
 
 天空、树木与人物在已查看的首、中、末段均可辨，画面较明亮，作为首选演示。输入为W＋间歇↑。
 
-[![草地前进与抬头：精选15秒生成预览](assets/demos/pair-b-forward-up-preview.gif)](assets/demos/pair-b-forward-up.mp4)
+[![草地前进与抬头：精选15秒生成预览](assets/demos/pair-b-forward-up-preview.gif)](https://huanyn.github.io/InteractWorld/#pair-b-forward-up)
 
-[观看完整16 FPS视频](assets/demos/pair-b-forward-up.mp4)
+[观看完整16 FPS视频](https://huanyn.github.io/InteractWorld/#pair-b-forward-up)
 
 #### 2. 山地场景：前进＋左转
 
 人物与山体保持可辨，场景与上一段不同；后段肢体和纹理仍会软化。输入为W＋间歇←。
 
-[![山地前进与左转：精选15秒生成预览](assets/demos/pair-a-forward-left-preview.gif)](assets/demos/pair-a-forward-left.mp4)
+[![山地前进与左转：精选15秒生成预览](assets/demos/pair-a-forward-left-preview.gif)](https://huanyn.github.io/InteractWorld/#pair-a-forward-left)
 
-[观看完整16 FPS视频](assets/demos/pair-a-forward-left.mp4)
+[观看完整16 FPS视频](https://huanyn.github.io/InteractWorld/#pair-a-forward-left)
 
 #### 3. 原固定展示：抬头、低头与移动
 
 保留原网页真实生成样片：中段可见天空和山脊，随后视角回到地面，比单一方向更适合展示动作时间线。人物仍有软变形，方向变化不是逐帧控制精度验证。
 
-[![原window6网页演示：视角切换与移动](assets/demos/action-r005-1040-window6-preview.gif)](assets/demos/action-r005-1040-window6.mp4)
+[![原window6网页演示：视角切换与移动](assets/demos/action-r005-1040-window6-preview.gif)](https://huanyn.github.io/InteractWorld/#action-r005-1040-window6)
 
-[观看完整16 FPS视频](assets/demos/action-r005-1040-window6.mp4)
+[观看完整16 FPS视频](https://huanyn.github.io/InteractWorld/#action-r005-1040-window6)
 
-顶部是实际首图和静态提示词，左侧WASD、右侧箭头表示模型收到的控制输入。GIF为4 FPS压缩抽帧预览，请点击完整MP4观看实际视频；没有剪去后半段、插帧或循环补时。这次仅重新选片和调整展示，没有重训或新生成。
+顶部是实际首图和静态提示词，左侧WASD、右侧箭头表示模型收到的控制输入。GIF为4 FPS压缩抽帧预览，点击图片或“观看完整16 FPS视频”进入在线播放器，可播放、拖动和全屏观看实际视频；没有剪去后半段、插帧或循环补时。这次仅重新选片和调整展示，没有重训或新生成。
 
 ### 训练过程与完整对照
 
@@ -46,7 +46,7 @@
 
 **完整的两组同图文、同seed、不同动作对照**仍保存在[配对实验页](docs/action-control-pairs.md)，包括未选上首页的两段反向控制。新自定义动作没有对应未来GT，不报告或借用历史RGB MSE。首页精选不是完整消融对照，失败证据和各版数据不删除。
 
-[13段历史视频归档](docs/demo-gallery.md) · [版本改动与指标](docs/version-history.md) · [配对条件和媒体清单](assets/demos/manifest.json) · [离线历史播放器](docs/demo-gallery.html)
+[13段历史视频归档](docs/demo-gallery.md) · [版本改动与指标](docs/version-history.md) · [配对条件和媒体清单](assets/demos/manifest.json) · [在线历史播放器](https://huanyn.github.io/InteractWorld/docs/demo-gallery.html)
 
 ## 当前固定展示版
 

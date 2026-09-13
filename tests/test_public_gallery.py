@@ -60,7 +60,7 @@ def test_archived_pairs_are_same_condition_with_changed_controls():
             assert clip["weighted_rgb_mse"] is None
             assert sum(segment["frames"] for segment in clip["action_segments"]) == 240
             assert f"../assets/demos/{clip['id']}-preview.gif" in archive
-            assert f"../assets/demos/{clip['id']}.mp4" in archive
+            assert f"https://huanyn.github.io/InteractWorld/#{clip['id']}" in archive
     assert images[0] != images[1]
 
 def test_homepage_is_visually_curated_not_a_hidden_pair_comparison():
@@ -75,7 +75,7 @@ def test_homepage_is_visually_curated_not_a_hidden_pair_comparison():
     assert readme.count("-preview.gif") == 3
     for clip_id in selection["clip_ids"]:
         assert f"assets/demos/{clip_id}-preview.gif" in readme
-        assert f"assets/demos/{clip_id}.mp4" in readme
+        assert f"https://huanyn.github.io/InteractWorld/#{clip_id}" in readme
     for clip_id in ("pair-a-backward-right", "pair-b-backward-down", "causal-clean60", "causal-recycling60"):
         assert f"assets/demos/{clip_id}-preview.gif" not in readme
 
@@ -86,3 +86,15 @@ def test_public_scores_do_not_claim_the_web_clip_passed():
     assert selected["exact_matched_zero_shuffled_available"] is False
     assert selected["realtime_passed"] is False
     assert selected["precise_control_passed"] is False
+
+def test_playback_page_covers_all_clips_and_uses_native_video():
+    page = (ROOT / "index.html").read_text(encoding="utf-8")
+    assert (ROOT / ".nojekyll").is_file()
+    assert '<video id="player" controls playsinline preload="metadata"' in page
+    assert 'type="video/mp4"' in page
+    assert 'addEventListener("hashchange", selectClip)' in page
+    assert 'addEventListener("error"' in page
+    for clip in MANIFEST["clips"]:
+        assert f'id:"{clip["id"]}"' in page
+    assert "raw.githubusercontent.com" not in page
+    assert "autoplay" not in page

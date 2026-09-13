@@ -2,7 +2,7 @@
 
 整理日期：2026-09-13。当前展示选择是 **Action R005 step1040 + window6（6+6+3 秒）**。后续实验有更低的单例像素误差，也有明确的失败视频；版本号更大不等于画面更好。视频均来自本项目已有生成结果，未为本页重新训练或生成。
 
-[观看所选网页 Demo](../assets/demos/action-r005-1040-window6.mp4) · [固定参数与复现边界](demo-window6-v1.md) · [机器可读结果](version-results.json)
+[观看所选网页 Demo](https://huanyn.github.io/InteractWorld/#action-r005-1040-window6) · [固定参数与复现边界](demo-window6-v1.md) · [机器可读结果](version-results.json)
 
 另见[完整四段配对实验](action-control-pairs.md)：复用固定Action1040权重，仅补生成同图文/同seed、不同动作的两组视频，不是新训练版本。[README](../README.md#demo-视频与版本对照)按画面表现选片，不是完整对照或平均质量。下表的历史分数不适用于这些自定义动作样片。
 
@@ -26,16 +26,16 @@ R1 / R2 是早期 LongForcing-lite 的两轮运行修复，不是两套新模型
 | --- | --- | --- | --- |
 | 09-09 / R1 运行修复 | LongForcing-lite 在 step10 后发生梯度检查点重计算不一致；改为 reentrant checkpointing，跨过原失败边界 | 解决这一运行错误；随后 step26 / depth8 遇到新的 OOM。无独立同输入 15 秒版本分数 | 无独立样片 |
 | 09-09 / R2 运行修复 | 限定编译容量并禁止静默进入稠密注意力回退；从保存的 step20 恢复 | 完整 step26 反向及更新成功，后续完成 80/80；运行完成不代表画质通过 | 见下一行 |
-| 09-09 / LongForcing-lite step80 | 早期 Causal840 学生与 Action840 教师的分支；4 步学生续写、40 步教师末块端点监督，实际训练 80 步，非 DMD | best20、step80 均严重纹理化；step80 改用 40 步推理也未恢复。无与后文固定案例匹配的 RGB 三对照；样片场景与 seed 也不同 | [15 秒失败样片](../assets/demos/longforcing-lite-80.mp4) |
-| 09-09 / Action R003 step240 | 从原 Action840 仅权重初始化，沿用叙事提示词；动作注入 scale 改为 0.03，adapter LR 2e-5，LoRA LR 0，训练 240 步 | 旧固定窗的人物半透明、全局碎裂明显减轻；dev 仍有肢体拖影。短窗 flow MSE 仅在 σ=0.5 略优于 zero 与 shuffled，未证明可靠控制 | [真实 3 秒 dev 样片](../assets/demos/action-r003-240-3s.mp4) |
-| 09-09–10 / Action R004 step780 | 从 R003240 仅权重初始化；动态叙事文本改为静态场景文本，保持 scale 与学习率，训练 780 步 | 相对“R003 权重 + 静态文本”基线，dev 三档 flow MSE 均值下降 1.1983%；σ=0.8 仍不及 shuffled。15 秒抽帧后段出现半透明、重影 | [15 秒样片](../assets/demos/action-r004-780-15s.mp4) |
-| 09-10–11 / Action R005 step500 → 780 → 1040 | 从 R004780 仅权重初始化，恢复 LoRA LR 2e-6；后续从已保存状态严格续训到 1040。静态文本、scale 0.03 不变 | step500 同输入晚段人物轮廓比 R004 更完整，仍模糊；该配对只生成 correct，未有匹配动作三对照。1040 的结果取决于推理布局，见下表 | [step500](../assets/demos/action-r005-500-15s.mp4) / [step1040 旧分段](../assets/demos/action-r005-1040-chunked.mp4) |
-| 09-10–11 / Causal R006 step1280 | 从 **R005500** 初始化新因果 teacher-forcing 阶段，随后续训至 1280；不是从 R0051040 初始化 | 同输入 15 秒后段严重形变。sliding / full-history KV 的耗时与显存有实测，但均未通过质量、控制验收 | [sliding-window 15 秒失败样片](../assets/demos/causal-r006-1280.mp4) |
-| 09-11 / Action R007 step260 | 从 R0051040 仅权重初始化，切换绝对样本索引重采样，训练 260 步；仍是 49 帧 Action 路线 | 旧 5×3 秒布局 correct RGB MSE 为 .056376038，比同布局 R0051040 高约 20.97%，且不及 zero；12–15 秒变暗、视角偏向地面、人物继续模糊 | [15 秒样片](../assets/demos/action-r007-260.mp4) |
+| 09-09 / LongForcing-lite step80 | 早期 Causal840 学生与 Action840 教师的分支；4 步学生续写、40 步教师末块端点监督，实际训练 80 步，非 DMD | best20、step80 均严重纹理化；step80 改用 40 步推理也未恢复。无与后文固定案例匹配的 RGB 三对照；样片场景与 seed 也不同 | [15 秒失败样片](https://huanyn.github.io/InteractWorld/#longforcing-lite-80) |
+| 09-09 / Action R003 step240 | 从原 Action840 仅权重初始化，沿用叙事提示词；动作注入 scale 改为 0.03，adapter LR 2e-5，LoRA LR 0，训练 240 步 | 旧固定窗的人物半透明、全局碎裂明显减轻；dev 仍有肢体拖影。短窗 flow MSE 仅在 σ=0.5 略优于 zero 与 shuffled，未证明可靠控制 | [真实 3 秒 dev 样片](https://huanyn.github.io/InteractWorld/#action-r003-240-3s) |
+| 09-09–10 / Action R004 step780 | 从 R003240 仅权重初始化；动态叙事文本改为静态场景文本，保持 scale 与学习率，训练 780 步 | 相对“R003 权重 + 静态文本”基线，dev 三档 flow MSE 均值下降 1.1983%；σ=0.8 仍不及 shuffled。15 秒抽帧后段出现半透明、重影 | [15 秒样片](https://huanyn.github.io/InteractWorld/#action-r004-780-15s) |
+| 09-10–11 / Action R005 step500 → 780 → 1040 | 从 R004780 仅权重初始化，恢复 LoRA LR 2e-6；后续从已保存状态严格续训到 1040。静态文本、scale 0.03 不变 | step500 同输入晚段人物轮廓比 R004 更完整，仍模糊；该配对只生成 correct，未有匹配动作三对照。1040 的结果取决于推理布局，见下表 | [step500](https://huanyn.github.io/InteractWorld/#action-r005-500-15s) / [step1040 旧分段](https://huanyn.github.io/InteractWorld/#action-r005-1040-chunked) |
+| 09-10–11 / Causal R006 step1280 | 从 **R005500** 初始化新因果 teacher-forcing 阶段，随后续训至 1280；不是从 R0051040 初始化 | 同输入 15 秒后段严重形变。sliding / full-history KV 的耗时与显存有实测，但均未通过质量、控制验收 | [sliding-window 15 秒失败样片](https://huanyn.github.io/InteractWorld/#causal-r006-1280) |
+| 09-11 / Action R007 step260 | 从 R0051040 仅权重初始化，切换绝对样本索引重采样，训练 260 步；仍是 49 帧 Action 路线 | 旧 5×3 秒布局 correct RGB MSE 为 .056376038，比同布局 R0051040 高约 20.97%，且不及 zero；12–15 秒变暗、视角偏向地面、人物继续模糊 | [15 秒样片](https://huanyn.github.io/InteractWorld/#action-r007-260) |
 | 09-11–12 / native97 原版 step20 / 100 / 120 | 从 R0051040 仅权重初始化；连续 97 RGB 帧独立 VAE 编码为 25 latent，增加训练窗口长度 | step20 的 7.5 秒视角偏岩壁；step120 此时可见天空，后段人物仍软化、近似窄柱。三者 correct RGB MSE 为 .061707389 / .037737979 / .038298031；step100 未优于 shuffled | 本页提供数值与文字记录 |
-| 09-12 / native97 resampled step40 → 120 | 从 native97 原版 step100 仅权重初始化；修复固定索引重复采样与噪声/时间步重复问题，之后从新 step40 严格恢复至 120 | step40 RGB 三对照失败；step120 数值过线。step120 已查 7.5 / 15 秒帧均有人物与天空，但人物偏细、边缘柔化，构图明显变化；未据此宣称精准相机控制 | [resampled120](../assets/demos/native97-resampled-120.mp4) |
-| 09-12 / causal clean 与 context recycling，step20 → 60 | 从同一 native97 resampled120 初始化两臂；一臂用干净历史，另一臂只对历史条件注入此前预测的 detached 误差；首 latent 不扰动，未来 flow 目标不变 | 两臂 step20 均约 6 秒丢人。step60 回收臂 6 秒已丢人；clean 臂此时仍有人，但极长、极细，9 / 15 秒也消失。未有质量收益；未补 zero / shuffled RGB 分数 | [clean60](../assets/demos/causal-clean60.mp4) / [recycling60](../assets/demos/causal-recycling60.mp4) |
-| 09-12 / history-noise20 与 matched clean20 | 两臂均从同一 causal clean60 仅权重初始化，各训练 20 步；候选用当前样本 GT 历史高斯加噪，50% 混合干净历史；对照为普通干净历史续训 | 两臂均在 6 秒失去人物，15 秒为深色斜纹。候选/对照每步中位 47.76 / 48.03 秒，运行成功但视觉失败；未延至 80 / 200。非 on-policy 生成历史训练、非完整 LIVE、非 DMD | [加噪候选失败样片](../assets/demos/history-noise20.mp4) |
+| 09-12 / native97 resampled step40 → 120 | 从 native97 原版 step100 仅权重初始化；修复固定索引重复采样与噪声/时间步重复问题，之后从新 step40 严格恢复至 120 | step40 RGB 三对照失败；step120 数值过线。step120 已查 7.5 / 15 秒帧均有人物与天空，但人物偏细、边缘柔化，构图明显变化；未据此宣称精准相机控制 | [resampled120](https://huanyn.github.io/InteractWorld/#native97-resampled-120) |
+| 09-12 / causal clean 与 context recycling，step20 → 60 | 从同一 native97 resampled120 初始化两臂；一臂用干净历史，另一臂只对历史条件注入此前预测的 detached 误差；首 latent 不扰动，未来 flow 目标不变 | 两臂 step20 均约 6 秒丢人。step60 回收臂 6 秒已丢人；clean 臂此时仍有人，但极长、极细，9 / 15 秒也消失。未有质量收益；未补 zero / shuffled RGB 分数 | [clean60](https://huanyn.github.io/InteractWorld/#causal-clean60) / [recycling60](https://huanyn.github.io/InteractWorld/#causal-recycling60) |
+| 09-12 / history-noise20 与 matched clean20 | 两臂均从同一 causal clean60 仅权重初始化，各训练 20 步；候选用当前样本 GT 历史高斯加噪，50% 混合干净历史；对照为普通干净历史续训 | 两臂均在 6 秒失去人物，15 秒为深色斜纹。候选/对照每步中位 47.76 / 48.03 秒，运行成功但视觉失败；未延至 80 / 200。非 on-policy 生成历史训练、非完整 LIVE、非 DMD | [加噪候选失败样片](https://huanyn.github.io/InteractWorld/#history-noise20) |
 
 R003 的前置诊断中，同原 Action840 只关闭 adapter 后人物和场景恢复，动作特征 RMS / 视频 patch RMS 约为 24.18。它支持这个固定窗口的动作注入过强；关闭动作只是干预诊断，不能作为可互动成品。R004 之后的静态文本改动旨在避免叙事文本直接指定未来动作，数值收益仍须由匹配对照判断。
 
@@ -45,9 +45,9 @@ R003 的前置诊断中，同原 Action840 只关闭 adapter 后人物和场景�
 
 | 布局 | 改动 | 已观察画面 / 选择结果 |
 | --- | --- | --- |
-| [chunked，5×3 秒](../assets/demos/action-r005-1040-chunked.mp4) | 五个 49 RGB 帧窗口续写 | 后段有模糊和形变，末帧人物仍存在；不能说成“原版完全丢人” |
-| [joint61，整段 15 秒](../assets/demos/action-r005-1040-joint61.mp4) | 同权重改为整段联合推理 | correct RGB MSE 比旧分段低 31.4578%，但抬头响应退步，因此未选为默认 |
-| [window6，6+6+3 秒](../assets/demos/action-r005-1040-window6.mp4) | 三窗分别 97 / 97 / 49 RGB 帧，去掉重复条件帧后为 241 帧 | 约 7.5 秒抬头、11–12 秒转回俯地的总体响应恢复；所查帧人物和地形保留到末尾，仍有软变形。选为异步 Demo |
+| [chunked，5×3 秒](https://huanyn.github.io/InteractWorld/#action-r005-1040-chunked) | 五个 49 RGB 帧窗口续写 | 后段有模糊和形变，末帧人物仍存在；不能说成“原版完全丢人” |
+| [joint61，整段 15 秒](https://huanyn.github.io/InteractWorld/#action-r005-1040-joint61) | 同权重改为整段联合推理 | correct RGB MSE 比旧分段低 31.4578%，但抬头响应退步，因此未选为默认 |
+| [window6，6+6+3 秒](https://huanyn.github.io/InteractWorld/#action-r005-1040-window6) | 三窗分别 97 / 97 / 49 RGB 帧，去掉重复条件帧后为 241 帧 | 约 7.5 秒抬头、11–12 秒转回俯地的总体响应恢复；所查帧人物和地形保留到末尾，仍有软变形。选为异步 Demo |
 | 6+3+6 秒 | 只调整窗口边界，检查后段反馈位置 | 固定案例数值过线，未采用；它的 zero / shuffled 不能作为 6+6+3 的对照 |
 
 上面 `window6` 链接是历史**网页 RGB 首图协议**样片。下表 .035743487 来自另一个**冻结 latent 协议**样片的后续辅助评分；两者输入编码不同，不是同一条视频的分数。网页样片总处理 139.111 秒；冻结样片生成 142.679 秒。它们输出 241 帧、16 FPS，首尾跨度 15 秒、文件时长 15.0625 秒；16 FPS 是播放速度，未达到实时生成。
