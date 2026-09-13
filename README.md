@@ -4,6 +4,16 @@
 
 在官方 Wan2.2-TI2V-5B 预训练基座上训练动作 Adapter 和 LoRA，将首图、静态场景文本及按键时间线接入视频生成，并提供异步网页 Demo。复用 ABot 兼容的控制接口与部分训练思路，不使用其成品模型代替本项目训练，也不把上游实时性能当成本项目结果。
 
+## Demo 视频与版本对照
+
+[![R0051040 window6：完整轨迹的4fps抽帧预览](assets/demos/action-r005-1040-window6-preview.gif)](assets/demos/action-r005-1040-window6.mp4)
+
+[完整16fps MP4](assets/demos/action-r005-1040-window6.mp4) · [13段视频画廊](docs/demo-gallery.md) · [每个版本改了什么、效果与指标](docs/version-history.md) · [精确结果JSON](docs/version-results.json)
+
+上面是当前选择的 **R0051040＋window6**，GIF只用于预览，完整MP4保留原视频帧。画廊同时公开R003/R004/R005/R006/R007、长窗适配、因果回收及历史噪声的代表性样片，包括失败结果。R003仅有真实3秒诊断，其余为15秒轨迹；并非所有版本使用相同场景、文本和采样条件，不能直接排成公平模型榜单。
+
+下载仓库后可打开 [离线播放器](docs/demo-gallery.html) 连续查看，无需GPU或网页推理服务。GitHub若不直接播放MP4，请使用Raw/Download。样片对应历史实验，本次没有重新训练或生成。
+
 ## 当前固定展示版
 
 截至 2026-09-13，展示方案固定为 **Action R005 step1040 + window6**。后续因果、少步与历史扰动实验保留为研究分支，不自动替换这个版本。
@@ -43,7 +53,7 @@
 
 ## 快速开始：先做 CPU 检查
 
-仓库提供最小源码、配置和测试，不包含权重、数据、缓存、生成媒体、运行日志或私人部署/授权记录。克隆后可以运行 CPU 契约测试；**不能在缺少模型资产时一键生成上述视频**。
+仓库提供最小源码、配置、测试和13段明确选定的自训生成样片，不包含模型权重、原始数据集视频、特征缓存、运行日志或私人部署/授权记录。克隆后可以运行 CPU 契约测试；**不能在缺少模型资产时一键生成上述视频**。
 
 以下为 Linux Bash 示例。参考 CPU 环境为 Python3.12，依赖以仓库文件为准；虚拟环境、包缓存和后续训练资产应放在自己的可写数据盘。
 
@@ -126,4 +136,4 @@ Action R005 的结构模板见 [R005配置](configs/train/action_teacher_5090_re
 
 基于 [AMAP CV Lab / ABot-World](https://github.com/amap-cvlab/ABot-World)，使用 [Wan2.2](https://github.com/Wan-Video/Wan2.2) 模型代码与基座，数据来自 [ABot-World-Explorer-500h](https://huggingface.co/datasets/acvlab/ABot-World-Explorer-500h)。本项目主要工作是受资源约束的训练/适配实现、输入契约、恢复和部署链路及真实诊断，不将上游架构或性能作为原创成果。
 
-保留 [LICENSE](LICENSE)、[NOTICE](NOTICE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。模型与数据还需遵守各自许可，代码许可不自动覆盖它们。公开仓不分发上游展示视频或本地私有实验资产。
+保留 [LICENSE](LICENSE)、[NOTICE](NOTICE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。模型与数据还需遵守各自许可，代码许可不自动覆盖它们。公开样片仅限本项目明确选定的生成结果，不分发上游宣传视频、原始数据集视频、权重或其他私有实验资产。

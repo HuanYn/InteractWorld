@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
-  "source_revision": "d372eb1bfb06f54e04724f6f781ebed22bf783f8",
+  "source_revision": "e50227f8a3bdd4d78cafeaffcdb55f5ff7730fe1",
   "upstream": "https://github.com/amap-cvlab/ABot-World",
   "public_repository": "https://github.com/HuanYn/InteractWorld.git",
   "development_history_included": false,
@@ -30,14 +30,19 @@
       "source_path": "NOTICE"
     },
     "README.md": {
-      "sha256": "6d2cbc7ff2a44da8c4db0156a6f18c743dfaae1e633d9eea3cf556b2aa001004",
-      "bytes": 9113,
+      "sha256": "19a77616a8c2ee5bdea0ba5568f3e48c1eebbe4376c757890725251a1340ecda",
+      "bytes": 10278,
       "source_path": "public_repro/README.md"
     },
     "THIRD_PARTY_NOTICES.md": {
-      "sha256": "6d6f1f7194d5ba9810d8793a520165301f55512f76b54cf7410eeb50b715d4df",
-      "bytes": 1654,
-      "source_path": "THIRD_PARTY_NOTICES.md"
+      "sha256": "59b5d0548266f5141ee54f137a54b6a545820ab8060f7971e3466c02ac9e7bea",
+      "bytes": 2765,
+      "source_path": "public_repro/THIRD_PARTY_NOTICES.md"
+    },
+    "assets/demos/manifest.json": {
+      "sha256": "e04cd859bfcb2edc52b8bac512584684827242b4f4cd78b85e12de72f26bd58c",
+      "bytes": 11523,
+      "source_path": "public_repro/assets/demos/manifest.json"
     },
     "configs/eval/rollout15s_v1.yaml": {
       "sha256": "a0451d817982e6bc069a212ce94895e911c0b53af18b0e886b50bf34c9c74a45",
@@ -124,14 +129,24 @@
       "bytes": 6180,
       "source_path": "public_repro/docs/context-error-recycling.md"
     },
+    "docs/demo-gallery.html": {
+      "sha256": "a915546722d96b0ddd9949e75b65d3ac86fce8d1326b87bad2e6f41c116ff222",
+      "bytes": 8056,
+      "source_path": "public_repro/docs/demo-gallery.html"
+    },
+    "docs/demo-gallery.md": {
+      "sha256": "b10b9290793524f0d9004a661ce5e2110a87b1a7254ced3941c0f7c4cf0a4b54",
+      "bytes": 6342,
+      "source_path": "public_repro/docs/demo-gallery.md"
+    },
     "docs/demo-window6-v1.json": {
       "sha256": "22b58290cb32d84eb4e8a8f40551e17a670d43796090c84dd30ec5c78a7a22da",
       "bytes": 3695,
       "source_path": "public_repro/docs/demo-window6-v1.json"
     },
     "docs/demo-window6-v1.md": {
-      "sha256": "30a25c20136e439bae040e8ec7510a02ea19b450ba90923d30b850de228cdbf3",
-      "bytes": 4707,
+      "sha256": "c1ab335cc8b928ff40554b666ca27a583a1c43abec49d0f8160d3378210bb65a",
+      "bytes": 4839,
       "source_path": "public_repro/docs/demo-window6-v1.md"
     },
     "docs/moba-inspired.md": {
@@ -143,6 +158,16 @@
       "sha256": "1394c179fbab4e790502858ab05ac72bcbedc383e9b407b75fea4ee6a6104374",
       "bytes": 21768,
       "source_path": "public_repro/docs/research-training-reference.md"
+    },
+    "docs/version-history.md": {
+      "sha256": "732bd853ed1765cf5b2dc85f3c4c7bb6a38406652b626a178025c222189d6c69",
+      "bytes": 13182,
+      "source_path": "public_repro/docs/version-history.md"
+    },
+    "docs/version-results.json": {
+      "sha256": "044128abea0297c85fc0188fe158c4acd640c2b44b638dec63ef837431c32e53",
+      "bytes": 25861,
+      "source_path": "public_repro/docs/version-results.json"
     },
     "pipeline/__init__.py": {
       "sha256": "03cb4c711cdc92cd01e0a8b3ef12da0efd3fd97b6d06d403c6c1a238acbca0f1",
@@ -394,6 +419,11 @@
       "bytes": 4420,
       "source_path": "tests/test_portable_paths.py"
     },
+    "tests/test_public_gallery.py": {
+      "sha256": "3522d44d11fb53cd39516dc5caf863b5240532b1ce213a2cea59c9a4aaf6d367",
+      "bytes": 2199,
+      "source_path": "public_repro/tests/test_public_gallery.py"
+    },
     "tests/test_rollout15s.py": {
       "sha256": "ffcc3a30572787f275f70b3ffa7a3ac7060cf055478d7fd1feb520c3ee171895",
       "bytes": 4325,
@@ -520,8 +550,8 @@
       "source_path": "training/data/safe_annotations.py"
     },
     "training/demo/README.md": {
-      "sha256": "260e2dc3695b03397c68024b671f8c5c25b92c3efbaa0c18c642f93daeb22d4f",
-      "bytes": 11463,
+      "sha256": "2597581602bc4f8cf42ba4e47c293d3d3e6915de9d6b57157f7550fab7f13aee",
+      "bytes": 11588,
       "source_path": "public_repro/training/demo/README.md"
     },
     "training/demo/__init__.py": {
@@ -755,5 +785,5 @@
       "source_path": "wan/modules/vae2_2.py"
     }
   },
-  "source_bytes": 1666734
+  "source_bytes": 1736430
 }

@@ -1,0 +1,741 @@
+{
+  "schema_version": 1,
+  "kind": "deidentified_historical_demo_version_results",
+  "as_of": "2026-09-13",
+  "language": "zh-CN",
+  "scope": "主要历史版本与单例诊断摘要；不是完整 benchmark。仅汇总已有结果，未重新训练、生成或评分。",
+  "missing_value_policy": "null means no matched result in this summary, never zero.",
+  "evidence_policy": "checkpoint SHA256 来自历史记录。本次未下载或重新计算权重；未发布原始运行收据。来源摘要标题仅说明证据种类。",
+  "media_policy": "链接指向项目生成样片。RGB 指标取历史原始成片，不含 HUD；公开展示文件可能重新封装或压缩，因此不能把其重算值当原始值。",
+  "data_scope": {
+    "source_name": "ABot-World-Explorer-500h",
+    "source_name_is_actual_training_hours": false,
+    "uses_subset": true,
+    "native97_verified_subset": {
+      "train_episodes": 128,
+      "cached_windows": 256,
+      "rgb_frames_per_window": 97,
+      "latent_frames_per_window": 25
+    },
+    "native97_original_sampling": {
+      "cache_keys_selected": 201,
+      "cache_keys_unselected_by_fixed_mapping": 55,
+      "total_cache_keys": 256,
+      "claim": "固定索引反复访问和重复噪声/时间步已由源码与实际配置证实；没有证明这是形变的唯一原因。"
+    },
+    "evaluation": {
+      "fixed_dev_cases": 1,
+      "seed": 42,
+      "full_validation_benchmark": false,
+      "independent_scene_seed_replicates": false
+    },
+    "exceptions": "LongForcing-lite80 的示例使用另一场景、seed4201；R003 的旧训练窗仅作诊断，不作泛化证据。"
+  },
+  "selected_demo": {
+    "media_id": "action-r005-1040-window6",
+    "path": "assets/demos/action-r005-1040-window6.mp4",
+    "checkpoint_sha256": "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee",
+    "checkpoint_label": "Action R005 step1040",
+    "checkpoint_stage": "action_teacher_lora_v1",
+    "training_rgb_frames": 49,
+    "protocol": "action_teacher_window6_15s_ui_v1",
+    "input_encoding": "decoded_condition_rgb",
+    "partition_seconds": [
+      6,
+      6,
+      3
+    ],
+    "frames": 241,
+    "fps": 16,
+    "width": 832,
+    "raw_height": 480,
+    "hud_height": 528,
+    "temporal_span_seconds": 15,
+    "encoded_duration_seconds": 15.0625,
+    "web_total_processing_seconds": 139.111,
+    "frozen_protocol_generation_seconds": 142.67908822302707,
+    "frozen_protocol_is_pixel_identical_to_web": false,
+    "weighted_rgb_mse_for_this_published_web_clip": null,
+    "exact_matched_zero_shuffled_available": false,
+    "realtime_passed": false,
+    "precise_control_passed": false,
+    "generalization_passed": false,
+    "observation": "所查帧人物与地形保留到末尾，整体抬头/俯地响应恢复，仍有肢体软变形。",
+    "source_summary_ids": [
+      "archive_readme",
+      "window6_review"
+    ]
+  },
+  "version_checkpoints": [
+    {
+      "id": "longforcing_lite80",
+      "label": "LongForcing-lite",
+      "step": 80,
+      "sha256": "c9d03766ba53c58964b3de54ddab98f1f1d4eb61cbc123a5cbdebfc514d185db",
+      "parent": "early Causal840 student + original Action840 teacher",
+      "change": "4步学生、40步教师末块端点监督；80步完成，非DMD。",
+      "published_media_id": "longforcing-lite-80",
+      "source_summary_ids": [
+        "historical_ledger"
+      ]
+    },
+    {
+      "id": "action_r003240",
+      "label": "Action R003",
+      "step": 240,
+      "sha256": "50704cf67a60cea29a41e05e1f407eb07acd3ca2e4d6385f1b89b5346a581341",
+      "parent": "original Action840, weights-only",
+      "change": "scale0.03；adapterLR2e-5；LoRALR0；新optimizer与step0。",
+      "published_media_id": "action-r003-240-3s",
+      "source_summary_ids": [
+        "action_r003"
+      ]
+    },
+    {
+      "id": "action_r004780",
+      "label": "Action R004",
+      "step": 780,
+      "sha256": "dfc8ae299f26c0c953c4d00ddc320c6323f5ee59491014b8b2977c8315221f7e",
+      "parent": "Action R003240, weights-only",
+      "change": "静态场景文本；scale0.03与adapter-only训练不变。",
+      "published_media_id": "action-r004-780-15s",
+      "source_summary_ids": [
+        "action_r004",
+        "action_r005500"
+      ]
+    },
+    {
+      "id": "action_r005500",
+      "label": "Action R005",
+      "step": 500,
+      "sha256": "0e318c48443e860c64dc4742c0e31eee37d1b67840eccc7d36066e3add722910",
+      "parent": "Action R004780, weights-only",
+      "change": "LoRALR从0改2e-6；同静态文本、scale0.03。",
+      "published_media_id": "action-r005-500-15s",
+      "source_summary_ids": [
+        "action_r005500"
+      ]
+    },
+    {
+      "id": "action_r0051040",
+      "label": "Action R005",
+      "step": 1040,
+      "sha256": "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee",
+      "parent": "Action R005500 -> 780 -> 1040, strict resume",
+      "change": "保留optimizer、RNG与数据游标续训；展示推理布局另外选择。",
+      "published_media_id": "action-r005-1040-window6",
+      "source_summary_ids": [
+        "archive_readme"
+      ]
+    },
+    {
+      "id": "causal_r0061280",
+      "label": "Causal R006",
+      "step": 1280,
+      "sha256": "48d83df07fb7d1946beca6c6852558ca31f76cbcbedca449f194ea77b6c3fe74",
+      "parent": "Action R005500, new causal stage",
+      "change": "因果teacher forcing；不是R0051040的后代。公开视频为sliding-window，无Transformer KV。",
+      "published_media_id": "causal-r006-1280",
+      "source_summary_ids": [
+        "causal_sliding",
+        "causal_fullkv"
+      ]
+    },
+    {
+      "id": "action_r007260",
+      "label": "Action R007",
+      "step": 260,
+      "sha256": "aba214b73d9eebb9faa7f0881cdc5d1413045040f4d2a96597c477f885b50651",
+      "parent": "Action R0051040, sampling transition weights-only",
+      "change": "49帧路线的绝对样本索引重采样；新optimizer、新step0。",
+      "published_media_id": "action-r007-260",
+      "source_summary_ids": [
+        "action_r007"
+      ]
+    },
+    {
+      "id": "native97_resampled120",
+      "label": "native97 resampled",
+      "step": 120,
+      "sha256": "48e6e6c07c94365dc59eb60e8793dbcb8f58efa05bc4cb090b182c8eeac78f0b",
+      "parent": "native97 original100, weights-only; new40 -> 120 strict resume",
+      "change": "97帧训练保持，改为绝对索引重采样。",
+      "published_media_id": "native97-resampled-120",
+      "source_summary_ids": [
+        "resampled120",
+        "native97_sampling"
+      ]
+    },
+    {
+      "id": "causal_recycling20",
+      "label": "context recycling",
+      "step": 20,
+      "sha256": "54ae976365f1be5f2ac6860aa024bb4e47aca122c6f65cd3a28b475a00d264b2",
+      "parent": "native97 resampled120, new causal stage",
+      "change": "只扰动历史条件；旧误差先使用，当前detached误差后入库。",
+      "published_media_id": null,
+      "source_summary_ids": [
+        "recycling20"
+      ]
+    },
+    {
+      "id": "causal_clean20",
+      "label": "clean causal control",
+      "step": 20,
+      "sha256": "ecbee5ba5dd2c172bf4b957a1d565bd2cfc594c79e58bcaaf611a459f35603d5",
+      "parent": "native97 resampled120, new causal stage",
+      "change": "同源干净历史对照。",
+      "published_media_id": null,
+      "source_summary_ids": [
+        "recycling20"
+      ]
+    },
+    {
+      "id": "causal_recycling60",
+      "label": "context recycling",
+      "step": 60,
+      "sha256": "a631341085933f73b57ba5ad059894a2d2ba3a6c7eca3378123ca163bd221e6a",
+      "parent": "context recycling20, strict resume",
+      "change": "20->60；没有将未保存的28步瞬时状态当checkpoint。",
+      "published_media_id": "causal-recycling60",
+      "source_summary_ids": [
+        "recycling60"
+      ]
+    },
+    {
+      "id": "causal_clean60",
+      "label": "clean causal control",
+      "step": 60,
+      "sha256": "ecedc750eecfd110f0133fec91f7552a87172c8388c5ee8a0b8368c6d4f61a77",
+      "parent": "clean causal20, strict resume",
+      "change": "同源干净历史对照续至60。",
+      "published_media_id": "causal-clean60",
+      "source_summary_ids": [
+        "recycling60"
+      ]
+    },
+    {
+      "id": "history_noise20",
+      "label": "history-noise candidate",
+      "step": 20,
+      "sha256": "4c0107dc479f594ac3b3eff29d5f6fdb6ddc346ce3d61209a9d3f036986d37f0",
+      "parent": "causal clean60, weights-only",
+      "change": "当前样本GT历史高斯加噪，50%混合干净历史；不是on-policy自生成历史训练。",
+      "published_media_id": "history-noise20",
+      "source_summary_ids": [
+        "noise_archive",
+        "noise_decision"
+      ]
+    }
+  ],
+  "runtime_repairs": [
+    {
+      "id": "R1",
+      "event": "step10之后梯度检查点重计算不一致",
+      "change": "reentrant checkpointing",
+      "outcome": "跨过原失败边界；后来step26出现独立OOM",
+      "separate_matched_video": false
+    },
+    {
+      "id": "R2",
+      "event": "step26/depth8编译上限后稠密注意力反向OOM",
+      "change": "限定编译容量、禁止静默稠密回退、从step20严格恢复",
+      "outcome": "完整step26更新成功，最终LongForcing-lite80完成；画质失败",
+      "separate_matched_video": false
+    }
+  ],
+  "rgb_metric_definition": {
+    "name": "weighted_whole_frame_RGB_MSE",
+    "normalization": "RGB/255",
+    "lower_is_better": true,
+    "anchor_frames": [
+      120,
+      180,
+      240
+    ],
+    "anchor_seconds": [
+      7.5,
+      11.25,
+      15
+    ],
+    "anchor_weights": [
+      0.2,
+      0.3,
+      0.5
+    ],
+    "seed": 42,
+    "sampler": "Euler40",
+    "sample_count": 1,
+    "anchor_count_is_not_independent_sample_count": true,
+    "statistical_significance_claim": false,
+    "future_GT_used_only_for_post_generation_scoring": true,
+    "cross_variant_warning": "Compare actions within each exact checkpoint and inference layout. Do not transfer passes between layouts, checkpoints or decoded-RGB web input and frozen-latent input.",
+    "scoring_domain": "Historical raw MP4 decoded whole-frame RGB; includes normal H264 codec effects; excludes HUD",
+    "formula": "sum(w[t] * mean(((generated_RGB[t] - reference_RGB[t]) / 255)^2))",
+    "full_validation_benchmark": false,
+    "public_media_rescore_is_original_metric": false
+  },
+  "rgb_comparisons": [
+    {
+      "id": "r0051040_chunked_5x3",
+      "checkpoint_sha256": "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee",
+      "checkpoint_step": 1040,
+      "inference_layout": "five sequential 3s windows linked by generated RGB endpoint re-encoding",
+      "partition_seconds": [
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "weighted_mse": {
+        "correct": 0.046603703126311305,
+        "zero": 0.04229008294641971,
+        "shuffled": 0.05682503320276737
+      },
+      "numeric_dual_baseline_pass": false,
+      "selected_checkpoint_and_layout": false,
+      "published_media_id": "action-r005-1040-chunked",
+      "score_applies_to_published_media_body": true,
+      "source_summary_ids": [
+        "archive_readme",
+        "joint_pair"
+      ],
+      "note": "数值过线不等于质量、动作语义或泛化通过。"
+    },
+    {
+      "id": "r0051040_joint61",
+      "checkpoint_sha256": "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee",
+      "checkpoint_step": 1040,
+      "inference_layout": "joint61 noncausal whole 15s",
+      "partition_seconds": null,
+      "weighted_mse": {
+        "correct": 0.03194320145994425,
+        "zero": 0.035293811745941636,
+        "shuffled": 0.03499516416341066
+      },
+      "numeric_dual_baseline_pass": true,
+      "selected_checkpoint_and_layout": false,
+      "published_media_id": "action-r005-1040-joint61",
+      "score_applies_to_published_media_body": true,
+      "source_summary_ids": [
+        "joint_pair",
+        "joint_triple",
+        "window6_review"
+      ],
+      "note": "pitch response regressed despite aggregate MSE improvement"
+    },
+    {
+      "id": "r0051040_window6_663",
+      "checkpoint_sha256": "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee",
+      "checkpoint_step": 1040,
+      "inference_layout": "6+6+3 秒窗口",
+      "partition_seconds": [
+        6,
+        6,
+        3
+      ],
+      "weighted_mse": {
+        "correct": 0.03574348669499159,
+        "zero": null,
+        "shuffled": null
+      },
+      "numeric_dual_baseline_pass": null,
+      "selected_checkpoint_and_layout": true,
+      "published_media_id": null,
+      "score_applies_to_published_media_body": false,
+      "source_summary_ids": [
+        "partition636",
+        "window6_review"
+      ],
+      "note": "冻结 latent 协议样片的后续辅助分数，不是已公开网页 RGB 首图协议视频的分数；无匹配 zero/shuffled。"
+    },
+    {
+      "id": "r0051040_partition636",
+      "checkpoint_sha256": "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee",
+      "checkpoint_step": 1040,
+      "inference_layout": "6+3+6 秒窗口",
+      "partition_seconds": [
+        6,
+        3,
+        6
+      ],
+      "weighted_mse": {
+        "correct": 0.03654665090143681,
+        "zero": 0.03949094098061323,
+        "shuffled": 0.04033453185111284
+      },
+      "numeric_dual_baseline_pass": true,
+      "selected_checkpoint_and_layout": false,
+      "published_media_id": null,
+      "score_applies_to_published_media_body": false,
+      "source_summary_ids": [
+        "partition636"
+      ],
+      "note": "数值过线不等于质量、动作语义或泛化通过。"
+    },
+    {
+      "id": "action_r007260_chunked_5x3",
+      "checkpoint_sha256": "aba214b73d9eebb9faa7f0881cdc5d1413045040f4d2a96597c477f885b50651",
+      "checkpoint_step": 260,
+      "inference_layout": "five sequential 3s windows linked by generated RGB endpoint re-encoding",
+      "partition_seconds": [
+        3,
+        3,
+        3,
+        3,
+        3
+      ],
+      "weighted_mse": {
+        "correct": 0.05637603849172592,
+        "zero": 0.04185917526483536,
+        "shuffled": 0.06388572603464127
+      },
+      "numeric_dual_baseline_pass": false,
+      "selected_checkpoint_and_layout": false,
+      "published_media_id": "action-r007-260",
+      "score_applies_to_published_media_body": true,
+      "source_summary_ids": [
+        "action_r007"
+      ],
+      "note": "correct 相对同布局 R0051040 高约20.97%；不能把胜过 shuffled 单独当成控制通过。"
+    },
+    {
+      "id": "native97_original20",
+      "checkpoint_sha256": "0520dbbf2f85b1fbdb10d08a0e4dc422a9ebe797d2e24a7b069507a03939dc7d",
+      "checkpoint_step": 20,
+      "inference_layout": "6+6+3 秒窗口",
+      "partition_seconds": [
+        6,
+        6,
+        3
+      ],
+      "weighted_mse": {
+        "correct": 0.06170738860964775,
+        "zero": null,
+        "shuffled": null
+      },
+      "numeric_dual_baseline_pass": null,
+      "selected_checkpoint_and_layout": false,
+      "published_media_id": null,
+      "score_applies_to_published_media_body": false,
+      "source_summary_ids": [
+        "native97_original"
+      ],
+      "note": "原版 native97，不是 resampled 分支。"
+    },
+    {
+      "id": "native97_original100",
+      "checkpoint_sha256": "a320718c7daaa5830d1f35915105606ce070fbda49c3dab248dc25b885731344",
+      "checkpoint_step": 100,
+      "inference_layout": "6+6+3 秒窗口",
+      "partition_seconds": [
+        6,
+        6,
+        3
+      ],
+      "weighted_mse": {
+        "correct": 0.037737978622317314,
+        "zero": 0.038586212508380416,
+        "shuffled": 0.03469296228140592
+      },
+      "numeric_dual_baseline_pass": false,
+      "selected_checkpoint_and_layout": false,
+      "published_media_id": null,
+      "score_applies_to_published_media_body": false,
+      "source_summary_ids": [
+        "native97_original",
+        "native97_original100"
+      ],
+      "note": "原版 native97，不是 resampled 分支。"
+    },
+    {
+      "id": "native97_original120",
+      "checkpoint_sha256": "201ee6600dcf5d82ee07801e4c4e38bea2d10f1267942faf69c18e57728bebbf",
+      "checkpoint_step": 120,
+      "inference_layout": "6+6+3 秒窗口",
+      "partition_seconds": [
+        6,
+        6,
+        3
+      ],
+      "weighted_mse": {
+        "correct": 0.03829803131520748,
+        "zero": null,
+        "shuffled": null
+      },
+      "numeric_dual_baseline_pass": null,
+      "selected_checkpoint_and_layout": false,
+      "published_media_id": null,
+      "score_applies_to_published_media_body": false,
+      "source_summary_ids": [
+        "native97_original"
+      ],
+      "note": "原版 native97，不是 resampled 分支。"
+    },
+    {
+      "id": "native97_resampled40",
+      "checkpoint_sha256": "2a2de8750a431ce3a2df7f68b366c5321f2d39473729c7497e7fe9b0853b9e94",
+      "checkpoint_step": 40,
+      "inference_layout": "6+6+3 秒窗口",
+      "partition_seconds": [
+        6,
+        6,
+        3
+      ],
+      "weighted_mse": {
+        "correct": 0.04307014420628548,
+        "zero": 0.03824038002640009,
+        "shuffled": 0.03913372252136469
+      },
+      "numeric_dual_baseline_pass": false,
+      "selected_checkpoint_and_layout": false,
+      "published_media_id": null,
+      "score_applies_to_published_media_body": false,
+      "source_summary_ids": [
+        "resampled40"
+      ],
+      "note": "数值过线不等于质量、动作语义或泛化通过。"
+    },
+    {
+      "id": "native97_resampled120",
+      "checkpoint_sha256": "48e6e6c07c94365dc59eb60e8793dbcb8f58efa05bc4cb090b182c8eeac78f0b",
+      "checkpoint_step": 120,
+      "inference_layout": "6+6+3 秒窗口",
+      "partition_seconds": [
+        6,
+        6,
+        3
+      ],
+      "weighted_mse": {
+        "correct": 0.027365035936236383,
+        "zero": 0.03780855108052492,
+        "shuffled": 0.03398950975388289
+      },
+      "numeric_dual_baseline_pass": true,
+      "selected_checkpoint_and_layout": false,
+      "published_media_id": "native97-resampled-120",
+      "score_applies_to_published_media_body": true,
+      "source_summary_ids": [
+        "resampled120"
+      ],
+      "note": "数值过线不等于质量、动作语义或泛化通过。"
+    }
+  ],
+  "short_flow_diagnostics": {
+    "metric": "unweighted future-latent flow MSE, not generated RGB MSE",
+    "future_duration_seconds": 3,
+    "seed": 42,
+    "sigma": [
+      0.2,
+      0.5,
+      0.8
+    ],
+    "independent_dev_windows": 1,
+    "r003240": {
+      "correct": [
+        0.5018731952,
+        0.2417297959,
+        0.1653471887
+      ],
+      "zero": [
+        0.4983696043,
+        0.2427631021,
+        0.1648514122
+      ],
+      "shuffled": [
+        0.5020908713,
+        0.2418054193,
+        0.1653437763
+      ],
+      "below_both_by_sigma": [
+        false,
+        true,
+        false
+      ],
+      "source_summary_ids": [
+        "action_r003"
+      ]
+    },
+    "r004_static_prompt_matched_baseline": {
+      "description": "R003240 weights with static prompt; not a newly trained R004 checkpoint",
+      "correct": [
+        0.5017180443,
+        0.2416208535,
+        0.1651646346
+      ]
+    },
+    "r004780": {
+      "correct": [
+        0.4959236681,
+        0.2392326295,
+        0.162460342
+      ],
+      "zero": [
+        0.4972541928,
+        0.2424451858,
+        0.1647959948
+      ],
+      "shuffled": [
+        0.4960517287,
+        0.2393235564,
+        0.1622143984
+      ],
+      "below_both_by_sigma": [
+        true,
+        true,
+        false
+      ],
+      "correct_three_sigma_mean_reduction_percent": 1.1983,
+      "source_summary_ids": [
+        "action_r004"
+      ]
+    },
+    "conclusion": "这些sigma点不构成独立样本；flow MSE不能作为15秒RGB控制通过依据。"
+  },
+  "causal_performance": {
+    "checkpoint_label": "Causal R006 step1280",
+    "checkpoint_sha256": "48d83df07fb7d1946beca6c6852558ca31f76cbcbedca449f194ea77b6c3fe74",
+    "scope": "Same weights/frozen input/Euler40; context retention and implementation differ. This is not proof of quality or equivalent-algorithm speedup.",
+    "variants": [
+      {
+        "id": "sliding",
+        "method": "causal_teacher_sliding_window_fixed15_euler40_v1",
+        "elapsed_seconds": 321.38988851499744,
+        "latent_generation_seconds": 281.6568119280273,
+        "peak_allocated_bytes": 12165271552,
+        "quality_passed": false,
+        "control_passed": false,
+        "source_summary_ids": [
+          "causal_sliding"
+        ]
+      },
+      {
+        "id": "fullkv",
+        "method": "causal_teacher_full_history_kv_fixed15_euler40_v2",
+        "elapsed_seconds": 148.5460411630338,
+        "latent_generation_seconds": 111.77052239503246,
+        "peak_allocated_bytes": 20183961088,
+        "quality_passed": false,
+        "control_passed": false,
+        "source_summary_ids": [
+          "causal_fullkv"
+        ]
+      }
+    ]
+  },
+  "history_source_diagnostic": {
+    "checkpoint_sha256": "ecedc750eecfd110f0133fec91f7552a87172c8388c5ee8a0b8368c6d4f61a77",
+    "metric": "future-block latent MSE against GT; not RGB weighted MSE",
+    "duration_seconds": 3,
+    "sample_count": 1,
+    "block0_bitwise_equal": true,
+    "oracle_gt_history_mse_by_block": [
+      0.5661093592643738,
+      0.4685249626636505,
+      0.36796048283576965,
+      0.3246086835861206
+    ],
+    "generated_history_mse_by_block": [
+      0.5661093592643738,
+      0.6481636762619019,
+      0.6692401766777039,
+      0.7907371520996094
+    ],
+    "last_block_relative_reduction": 0.5894859844080912,
+    "oracle_uses_ground_truth_history": true,
+    "oracle_is_deployable_demo": false,
+    "supported_observation": "fixed short rollout is sensitive to history error",
+    "unproven_hypotheses": [
+      "exposure bias is the unique root cause",
+      "Gaussian history noise fixes semantic generated-history errors"
+    ],
+    "source_summary_ids": [
+      "history_comparison",
+      "history_decision"
+    ]
+  },
+  "causal_negative_results": [
+    {
+      "id": "recycling_clean20",
+      "training_steps": 20,
+      "candidate": "context-only error recycling",
+      "control": "clean-history causal",
+      "observation_6s": "两臂人物均消失",
+      "observation_15s": "两臂为条纹地形，人物不可辨",
+      "visual_gate_passed": false,
+      "matched_rgb_three_actions": null,
+      "source_summary_ids": [
+        "recycling20"
+      ]
+    },
+    {
+      "id": "recycling_clean60",
+      "training_steps": 60,
+      "candidate": "context-only error recycling",
+      "control": "clean-history causal",
+      "observation_6s": "回收臂人物已消失；clean臂仍有人物，但极细极长、头被裁切",
+      "observation_15s": "两臂均为拉丝地表，人物不可辨",
+      "visual_gate_passed": false,
+      "matched_rgb_three_actions": null,
+      "source_summary_ids": [
+        "recycling60"
+      ]
+    },
+    {
+      "id": "history_noise_clean20",
+      "training_steps_per_arm": 20,
+      "parent": "same causal clean60",
+      "candidate": "current-sample GT history Gaussian corruption, 50% clean mix",
+      "control": "matched clean-history continuation",
+      "on_policy_generated_history_training": false,
+      "full_LIVE_cycle": false,
+      "DMD": false,
+      "new_teacher_loaded": false,
+      "last_update_max_sigma": 0.07375,
+      "absolute_microbatch_cursor": {
+        "start": 480,
+        "end": 640
+      },
+      "candidate_median_seconds_per_optimizer_step": 47.75747526448686,
+      "control_median_seconds_per_optimizer_step": 48.033685485992464,
+      "peak_allocated_bytes_each": 21452507136,
+      "peak_reserved_bytes_each": 23932698624,
+      "observation_6s": "两臂均失去可辨认人物，地形拖影",
+      "observation_15s": "两臂均为深色斜纹，无可辨认人物",
+      "visual_gate_passed": false,
+      "matched_rgb_three_actions": null,
+      "continued_to_80_or_200": false,
+      "interpretation": "两臂都退步，不能独归因于加噪；只说明当前配方没有通过视觉门槛。",
+      "source_summary_ids": [
+        "noise_archive",
+        "noise_decision"
+      ]
+    }
+  ],
+  "source_summaries": {
+    "archive_readme": "选定 Demo 的历史归档摘要",
+    "window6_review": "R0051040 window6 原始帧视觉复核",
+    "joint_pair": "R0051040 chunked / joint61 匹配对照",
+    "joint_triple": "R0051040 joint61 补充 shuffled 对照",
+    "partition636": "R0051040 6+3+6 动作三对照及旧 window6 辅助评分",
+    "resampled40": "native97 resampled40 动作三对照",
+    "resampled120": "native97 resampled120 动作三对照",
+    "causal_sliding": "Causal R0061280 sliding-window 耗时与显存记录",
+    "causal_fullkv": "Causal R0061280 full-history KV 耗时与显存记录",
+    "history_comparison": "同 clean60 权重的 3 秒历史来源诊断",
+    "history_decision": "3 秒历史来源诊断的视觉复核与解释边界",
+    "noise_archive": "history-noise20 与 clean20 训练、生成摘要",
+    "noise_decision": "history-noise20 与 clean20 视觉失败决定",
+    "historical_ledger": "早期 LongForcing R1 / R2 运行修复与 80 步完成记录",
+    "action_r003": "Action R003240 真实 3 秒生成与 flow 对照",
+    "action_r004": "Action R004780 相对静态文本基线的独立复核",
+    "action_r005500": "R004780 / R005500 同输入 15 秒抽帧比较",
+    "action_r007": "Action R007260 同输入动作三对照与视觉复核",
+    "native97_original": "native97 原版 step20 / 100 / 120 固定案例 RGB 比较",
+    "native97_original100": "native97 原版 step100 动作三对照",
+    "native97_sampling": "native97 原版固定索引采样覆盖分析",
+    "recycling20": "context recycling20 / clean20 资源记录及视觉复核",
+    "recycling60": "context recycling60 / clean60 原始帧视觉复核"
+  }
+}

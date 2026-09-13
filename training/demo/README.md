@@ -9,7 +9,8 @@ explicitly in the preparation command below; the generic default remains
 `chunked` for backward compatibility. Later causal/history-noise experiments do
 not replace this profile. A recorded single-scenario run exists, but reliable
 action control, general long-horizon stability and real-time performance are not
-established. No model assets or generated video are shipped with the code.
+established. Model assets are not shipped. The separate [historical gallery](../../docs/demo-gallery.md)
+contains selected generated clips for playback; that gallery is not this live model-backed UI.
 
 This document describes the service protocol, not permission to run on any
 machine. A deployment must satisfy its operator's current per-launch authority,
