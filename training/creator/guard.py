@@ -32,7 +32,9 @@ from training import gpu_gate
 # just to load the visual model. Still finite and fully reserved in the ledger.
 MAX_MODEL_SECONDS = 480
 MAX_NEW_STORAGE_BYTES = 100_000_000_000
-MAX_TOTAL_STORAGE_BYTES = 400_000_000_000
+DEFAULT_TOTAL_STORAGE_BYTES = 400_000_000_000
+MAX_TOTAL_STORAGE_BYTES = 600_000_000_000
+AUTHORIZED_STORAGE_LIMITS = (300_000_000_000, DEFAULT_TOTAL_STORAGE_BYTES, MAX_TOTAL_STORAGE_BYTES)
 STORAGE_METADATA_ALLOWANCE = 64 * 1024 * 1024
 RPC_SECONDS = 30.0
 
@@ -162,7 +164,9 @@ class GuardConfig:
     max_round_gpu_hours: float
     prior_storage_bytes: int
     storage_root: Path
-    storage_limit: int = MAX_TOTAL_STORAGE_BYTES
+    # Supporting an amended ceiling must never implicitly increase deployment
+    # defaults or replace the explicit private authority and ledger binding.
+    storage_limit: int = DEFAULT_TOTAL_STORAGE_BYTES
     gpu_index: int | None = None
 
     @classmethod
@@ -189,8 +193,8 @@ class GuardConfig:
                  'this Creator round has an operator ceiling of six GPU-hours')
         _require(type(self.prior_storage_bytes) is int and 0 <= self.prior_storage_bytes <= MAX_TOTAL_STORAGE_BYTES,
                  'invalid retained prior-storage accounting')
-        _require(type(self.storage_limit) is int and self.storage_limit in (300_000_000_000, MAX_TOTAL_STORAGE_BYTES),
-                 'storage ceiling must be 300GB or 400GB')
+        _require(type(self.storage_limit) is int and self.storage_limit in AUTHORIZED_STORAGE_LIMITS,
+                 'storage ceiling must be explicitly configured as 300GB, 400GB or 600GB')
         _require(self.storage_root.is_absolute() and self.storage_root != Path(self.storage_root.anchor)
                  and self.storage_root.is_dir(), 'storage root must be an existing data directory')
         _within(self.project_root, self.storage_root, equal=True)
@@ -222,7 +226,7 @@ class CreatorGuard:
         _require(isinstance(authority.get('authorization_id'), str) and authority['authorization_id'], 'authorization ID missing')
         _require(authority.get('total_gpu_hours_limit') == 160, 'authorization GPU-hour scope differs')
         limit = authority.get('total_storage_bytes_limit', 300_000_000_000)
-        _require(type(limit) is int and limit in (300_000_000_000, MAX_TOTAL_STORAGE_BYTES)
+        _require(type(limit) is int and limit in AUTHORIZED_STORAGE_LIMITS
                  and cfg.storage_limit <= limit, 'configured storage ceiling is not authorized')
         hosts = authority.get('hosts')
         host = hosts.get(gpu_gate.SHARED_PROFILE) if isinstance(hosts, dict) else None

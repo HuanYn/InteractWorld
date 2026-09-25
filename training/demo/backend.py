@@ -91,7 +91,7 @@ def validate_active_authority(lease):
             and authority.get('until_user_stop') is True, 'active standing authorization is required')
     storage_limit = authority.get('total_storage_bytes_limit', 300_000_000_000)
     require(authority.get('total_gpu_hours_limit') == 160 and type(storage_limit) is int
-            and storage_limit in (300_000_000_000, 400_000_000_000), 'authorization budget scope changed')
+            and storage_limit in (300_000_000_000, 400_000_000_000, 600_000_000_000), 'authorization budget scope changed')
     storage = lease.get('global_storage_bytes_upper')
     require(type(storage) is int and 0 <= storage <= storage_limit,
             'global storage budget exceeds the active authorization limit')
@@ -119,7 +119,7 @@ class CommandGuard:
 
     reserve input includes job_id, request_sha256, max_seconds and project_root.
     Output must satisfy validate_lease. The private provider owns a locked global
-    budget ledger, the160h checks, the authorized300GB/400GB storage ceiling,
+    budget ledger, the160h checks, the explicitly authorized300GB/400GB/600GB storage ceiling,
     and any cross-host open reservations.
     check returns {status: allowed}; settle returns {status: settled}. All calls
     include the immutable job ID and lease; settlement must be idempotent.

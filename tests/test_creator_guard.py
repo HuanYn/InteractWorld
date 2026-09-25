@@ -169,6 +169,64 @@ def test_storage_counts_retained_assets_and_caps_added_bytes(fixture, monkeypatc
         reserve(instance, ctx)
 
 
+@pytest.mark.parametrize('authority_limit', [None, 300_000_000_000, 400_000_000_000])
+def test_600gb_config_requires_explicit_authority(fixture, authority_limit):
+    instance, queries, _ = fixture
+    authority = guard._read(instance.config.authority)
+    if authority_limit is None:
+        authority.pop('total_storage_bytes_limit')
+    else:
+        authority['total_storage_bytes_limit'] = authority_limit
+    guard._write(instance.config.authority, authority)
+    amended = guard.CreatorGuard(replace(instance.config, storage_limit=600_000_000_000))
+    with pytest.raises(guard.GuardError, match='not authorized'):
+        reserve(amended, context(amended))
+    assert queries == [] and not instance.config.ledger.exists() and not instance.config.lock_root.exists()
+
+
+def test_600gb_authority_preserves_400gb_default_and_100gb_round_cap(fixture, monkeypatch):
+    from training.demo.backend import validate_lease
+    instance, queries, _ = fixture
+    authority = guard._read(instance.config.authority)
+    authority['total_storage_bytes_limit'] = 600_000_000_000
+    guard._write(instance.config.authority, authority)
+    config_path = instance.config.storage_root / 'config-without-storage-limit.json'
+    raw = instance.config.binding()
+    raw.pop('storage_limit')
+    guard._write(config_path, raw)
+    assert guard.GuardConfig.load(config_path).storage_limit == 400_000_000_000
+
+    amended = guard.CreatorGuard(replace(instance.config, storage_limit=600_000_000_000,
+                                        prior_storage_bytes=500_000_000_000))
+    monkeypatch.setattr(amended, '_query', lambda lease: queries.append(lease['gpu_uuid']))
+    monkeypatch.setattr(guard, '_directory_bytes', lambda _path: 80_000_000_000)
+    ctx = context(amended)
+    lease = reserve(amended, ctx)
+    assert 580_000_000_000 <= lease['global_storage_bytes_upper'] <= 600_000_000_000
+    validate_lease(lease, max_seconds=60, job_id=ctx['job_id'], request_sha256=ctx['request_sha256'])
+    assert queries == [UUID]
+    with pytest.raises(guard.GuardError, match='100GB'):
+        amended._storage_ok(100_000_000_001)
+    assert amended.config.max_round_gpu_hours == 6 and amended.config.prior_gpu_hours_upper == 130
+
+
+def test_storage_amendment_does_not_reset_400gb_ledger(fixture):
+    instance, queries, _ = fixture
+    first = context(instance)
+    lease = reserve(instance, first)
+    settle(instance, first, lease)
+    before = instance.config.ledger.read_bytes()
+    authority = guard._read(instance.config.authority)
+    authority['total_storage_bytes_limit'] = 600_000_000_000
+    guard._write(instance.config.authority, authority)
+    amended = guard.CreatorGuard(replace(instance.config, storage_limit=600_000_000_000))
+    with pytest.raises(guard.GuardError, match='explicit accounting reconciliation'):
+        reserve(amended, context(amended, 'after-budget-amendment'))
+    assert instance.config.ledger.read_bytes() == before
+    assert instance._ledger()['reservations'][lease['reservation_id']]['status'] == 'settled'
+    assert queries == [UUID, UUID]
+
+
 def test_check_scans_only_job_directory_and_rejects_storage_growth(fixture, monkeypatch):
     instance, _, scans = fixture
     ctx = context(instance)

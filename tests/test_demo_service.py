@@ -270,6 +270,22 @@ def test_dedicated_authority_still_rejects_nonzero_card_even_if_authority_lists_
         validate_lease(lease, max_seconds=900, now=1000)
 
 
+def test_600gb_lease_requires_explicit_active_600gb_authority(tmp_path):
+    lease, path = lease_fixture(tmp_path, profile=SHARED_PROFILE, storage_limit=600_000_000_000)
+    lease['global_storage_bytes_upper'] = 600_000_000_000
+    validate_lease(lease, max_seconds=900, now=1000)
+    with pytest.raises(ValueError, match='storage'):
+        validate_lease({**lease, 'global_storage_bytes_upper': 600_000_000_001}, max_seconds=900, now=1000)
+    with pytest.raises(ValueError, match='160 GPU-hours'):
+        validate_lease({**lease, 'global_gpu_hours_upper': 160.01}, max_seconds=900, now=1000)
+    authority = json.loads(path.read_text())
+    authority['total_storage_bytes_limit'] = 400_000_000_000
+    write_json(path, authority)
+    lease['authorization_sha256'] = sha256(path)
+    with pytest.raises(ValueError, match='storage'):
+        validate_lease(lease, max_seconds=900, now=1000)
+
+
 def test_new_output_must_match_this_job_and_inputs(tmp_path):
     deployment, _ = fixture(tmp_path)
     directory = deployment.jobs_root / ('f' * 32)
