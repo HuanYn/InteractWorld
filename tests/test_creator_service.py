@@ -40,6 +40,7 @@ class UnitTestProvider:
     def __init__(self):
         self.plans = []
         self.inspections = []
+        self.references = []
         self.on_inspect = None
         self.assessment = dict(
             verdict='unsatisfied', decision='revise',
@@ -54,8 +55,9 @@ class UnitTestProvider:
         prior = {'action_segments': previous['action_segments']} if previous else None
         return plan_request(text, previous=prior)
 
-    def inspect(self, video, goals):
+    def inspect(self, video, goals, *, reference_video_path=None):
         self.inspections.append((video, deepcopy(goals)))
+        self.references.append(reference_video_path)
         if self.on_inspect:
             self.on_inspect()
         return deepcopy(self.assessment)
@@ -248,7 +250,8 @@ def test_inspection_reads_raw_video_and_cites_temporal_model_evidence(service):
     inspected = service.inspect(target(session))
     video, goals = service.provider.inspections[0]
     assert Path(video) == service.demo.deployment.jobs_root / session['versions'][0]['job_id'] / 'raw.mp4'
-    assert goals == session['versions'][0]['plan']['goals']
+    assert goals[:-1] == session['versions'][0]['plan']['goals']
+    assert goals[-1] == '用户当前请求：' + session['versions'][0]['text']
     review = inspected['versions'][0]['review']
     assert review['source'] == 'model_assessment'
     assert review['calibrated'] is False
@@ -340,4 +343,38 @@ def test_model_failure_does_not_fabricate_a_review_or_advance_state(service):
     assert stored['versions'][0]['review'] is None
     assert len(stored['versions']) == 1
     assert stored['accepted_version'] is None
+    assert service.operations == {}
+
+
+def test_relative_inspection_uses_completed_parent_retry_and_keeps_history(service):
+    original = service.generate(target(make_plan(service)))
+    service.demo.jobs[original['versions'][0]['job_id']]['status'] = 'failed'
+    edited = make_plan(service, session_id=original['session_id'], request_id='edit-relative-001', text='保留前进，缩短抬头')
+    retry = service.retry({**target(original), 'request_id': 'retry-reference-001'})
+    reference = retry['versions'][-1]
+    service.demo.jobs[reference['job_id']]['status'] = 'completed'
+    generated = service.generate(target(edited))
+    version = next(v for v in generated['versions'] if v['version_id'] == target(edited)['version_id'])
+    service.demo.jobs[version['job_id']]['status'] = 'completed'
+    inspected = service.inspect(target(edited))
+    review = next(v for v in inspected['versions'] if v['version_id'] == version['version_id'])['review']
+    assert review['reference_version_id'] == reference['version_id']
+    assert service.provider.references[-1] == str(service.demo.deployment.jobs_root / reference['job_id'] / 'raw.mp4')
+    service.inspect(target(edited))
+    stored = service._version(service._session(edited['session_id']), version['version_id'])
+    assert len(stored['review_history']) == 1 and stored['review_history'][0] == review
+
+
+def test_visual_revision_cannot_undo_the_users_shortening_request(service):
+    original = complete(service, make_plan(service))
+    edited = complete(service, make_plan(service, session_id=original['session_id'],
+        request_id='shorten-parent-001', text='保留前进，缩短抬头'))
+    service.provider.assessment['revision_text'] = '延长抬头'
+    service.inspect(target(edited))
+    restored_parent = deepcopy(original['versions'][0]['plan'])
+    restored_parent['edit_scope'] = 'camera'
+    service.provider.plan = lambda text, previous: restored_parent
+    with pytest.raises(ValueError, match='contradicts the original'):
+        service.revise(target(edited))
+    assert len(service.list_sessions()[0]['versions']) == 2
     assert service.operations == {}

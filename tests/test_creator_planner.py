@@ -7,6 +7,14 @@ import pytest
 from training.creator.planner import compress_segments, expand_segments, plan_request
 
 
+@pytest.mark.parametrize('keys', [['A'], ['W', 'A'], []])
+def test_model_cannot_substitute_or_add_unrequested_directions(keys):
+    proposal = {'edit_scope': 'all', 'action_segments': [{'frames': 240, 'keys': keys}]}
+    result = plan_request('前进', proposal=proposal)
+    assert result['status'] == 'clarify'
+    assert 'requested directions' in result['explanation']
+
+
 def previous_plan():
     return {"action_segments": [
         {"frames": 60, "keys": ["W"]},
@@ -36,6 +44,20 @@ def test_camera_shorten_preserves_every_movement_frame_and_source():
     assert result["preserved"] and previous == before
     assert projection(result, "WASD") == projection(previous, "WASD")
     assert sum("I" in row for row in expand_segments(result["action_segments"])) == 60
+
+
+def test_explicit_duration_ratio_is_checked_not_only_direction():
+    previous = plan_request('一直前进，后半段抬头')
+    assert plan_request('保持移动不变，把抬头时长减半', previous)['status'] == 'ready'
+    wrong = {'edit_scope': 'camera', 'action_segments': [
+        {'frames': 120, 'keys': ['W']}, {'frames': 90, 'keys': ['W', 'I']},
+        {'frames': 30, 'keys': ['W']}]}
+    assert plan_request('把抬头时长减半', previous, wrong)['status'] == 'clarify'
+    near_full = {'action_segments': [{'frames': 200, 'keys': ['W']}, {'frames': 40, 'keys': []}]}
+    clipped = plan_request('前进时长增加一半', near_full)
+    assert clipped['status'] == 'clarify' and '不足' in clipped['explanation']
+    odd = {'action_segments': [{'frames': 101, 'keys': ['W']}, {'frames': 139, 'keys': []}]}
+    assert '奇数' in plan_request('前进时长减半', odd)['explanation']
 
 
 def test_movement_edit_preserves_every_camera_frame():

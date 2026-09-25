@@ -289,6 +289,23 @@ def test_parent_sigterm_cleans_owned_model_group_before_settlement(fixture, monk
     assert not instance._marker(UUID).exists()
 
 
+@pytest.mark.parametrize('reference_kind', ['same', 'outside', 'overlay'])
+def test_visual_reference_must_be_distinct_project_raw_before_reservation(fixture, reference_kind):
+    instance, queries, _ = fixture
+    current = instance.config.project_root / 'raw.mp4'
+    current.write_bytes(b'CPU-only path check')
+    reference = {'same': current, 'outside': instance.config.storage_root / 'raw.mp4',
+                 'overlay': instance.config.project_root / 'inputs.mp4'}[reference_kind]
+    if reference != current:
+        reference.write_bytes(b'CPU-only path check')
+    ctx = context(instance, 'bad-reference', request={'kind': 'inspect', 'video_path': str(current),
+        'reference_video_path': str(reference), 'goals': ['镜头抬头']})
+    request = Path(ctx['job_directory']) / 'request.json'
+    with pytest.raises(guard.GuardError):
+        guard.run_model(instance, request, request.with_name('output.json'))
+    assert queries == [] and not instance.config.ledger.exists()
+
+
 def test_cli_denies_non_json_and_does_not_return_fake_success(fixture, monkeypatch, capsys):
     instance, _, _ = fixture
     path = instance.config.storage_root / 'private-config.json'

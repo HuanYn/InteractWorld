@@ -461,6 +461,10 @@ def run_model(guard, request_path, output_path):
     if request['kind'] == 'inspect':
         video = _within(request.get('video_path', ''), cfg.project_root)
         _require(video.is_file() and video.name == 'raw.mp4', 'visual inspection requires a project raw.mp4')
+        if request.get('reference_video_path') is not None:
+            reference = _within(request['reference_video_path'], cfg.project_root)
+            _require(reference.is_file() and reference.name == 'raw.mp4' and reference != video,
+                     'visual reference requires a different project raw.mp4')
     _require(cfg.python.is_file() and cfg.model.is_dir() and (cfg.model / 'config.json').is_file(),
              'guarded Python and offline model must already exist')
     timeout_program = shutil.which('timeout')

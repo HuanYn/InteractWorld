@@ -136,10 +136,16 @@ class CommandProvider:
         return self._call({"kind": "plan", "text": text, "previous_plan": previous,
                            "capabilities": CAPABILITIES})
 
-    def inspect(self, video_path, goals):
+    def inspect(self, video_path, goals, *, reference_video_path=None):
         path = Path(video_path).resolve()
         if not path.is_file():
             raise ValueError("inspection requires an existing raw video")
         if not isinstance(goals, list) or not goals or not all(isinstance(goal, str) and goal.strip() for goal in goals):
             raise ValueError("inspection goals must be a non-empty list of strings")
-        return self._call({"kind": "inspect", "video_path": str(path), "goals": goals})
+        request = {"kind": "inspect", "video_path": str(path), "goals": goals}
+        if reference_video_path is not None:
+            reference = Path(reference_video_path).resolve()
+            if not reference.is_file() or reference == path:
+                raise ValueError("comparison needs a different existing raw reference video")
+            request['reference_video_path'] = str(reference)
+        return self._call(request)

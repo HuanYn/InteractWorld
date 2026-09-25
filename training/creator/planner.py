@@ -112,15 +112,15 @@ ONLY_MOVEMENT = re.compile(
     r"(?:edit|change|modify)\s+(?:only\s+)?(?:the\s+)?(?:movement|walking)(?:\s+only)?|"
     r"(?:movement|walking)\s+only"
 )
-SHORTEN = re.compile(r"缩短|减少|短一点|少一点|shorten|reduce|shorter|less")
-LENGTHEN = re.compile(r"延长|增加|长一点|多一点|lengthen|increase|longer|more")
+SHORTEN = re.compile(r"(?:缩短|减少)(?:一半)?|减半|短一点|少一点|shorten|reduce|shorter|less")
+LENGTHEN = re.compile(r"(?:延长|增加)(?:一半)?|长一点|多一点|lengthen|increase|longer|more")
 REMOVE = re.compile(r"不要|取消|去掉|不再|别|remove|without|do\s+not|don't|stop")
 HALF_LATE = re.compile(r"后半段?|下半段?|最后一半|second\s+half|latter\s+half")
 HALF_EARLY = re.compile(r"前半段?|上半段?|first\s+half")
 SEQUENCE = re.compile(r"先|然后|再|接着|之后|first|then|afterwards")
 CONTINUOUS = re.compile(r"全程|一直|持续|throughout|continuously|the\s+whole\s+time")
 FILLER = re.compile(
-    r"请|帮我|一下|一点|仅|只|要|把|将|的|时间|时长|动作|镜头|视角|移动|行走|"
+    r"请|帮我|一下|一点|仅|只|要|把|将|让|的|时间|时长|动作|镜头|视角|移动|行走|"
     r"保持|保留|不变|原来|原有|改为|改成|修改|调整|同时|并且|并|和|再|然后|接着|之后|先|"
     r"前半段?|上半段?|后半段?|下半段?|最后一半|全程|一直|持续|"
     r"\b(?:please|only|just|the|a|an|and|while|with|at|in|for|of|to|duration|time|"
@@ -225,6 +225,8 @@ def _fallback(intent, original):
             detail = f"取消{LABELS[key]}。"
         elif indices != list(range(indices[0], indices[-1] + 1)):
             return _result("clarify", "该动作有多个分散区间，请先指定要调整哪一段。", scope=scope)
+        elif ('减半' in intent.text or '一半' in intent.text) and len(indices) % 2:
+            return _result("clarify", "原时长为奇数帧，无法精确按一半分割；请使用普通缩短或延长并核对计划。", scope=scope)
         elif operation == "shorten":
             if len(indices) == 1:
                 return _result("clarify", "该动作只有 1 帧；如需去掉，请明确取消。", scope=scope)
@@ -237,6 +239,8 @@ def _fallback(intent, original):
             extra = max(1, len(indices) // 2)
             stop = min(TOTAL_FRAMES, indices[-1] + 1 + extra)
             start = max(0, indices[0] - (extra - (stop - indices[-1] - 1)))
+            if '一半' in intent.text and stop - start != len(indices) + extra:
+                return _result("clarify", "15 秒时间线不足以增加一半时长，请减少幅度或先缩短原动作。", scope=scope)
             if stop - start == len(indices):
                 return _result("clarify", "该动作已覆盖全部 240 帧，无法继续延长。", scope=scope)
             for index in range(start, stop):
@@ -304,6 +308,13 @@ def _validate_proposal(proposal, intent, original):
                 raise ValueError("non-ready proposal must not contain executable actions")
             return _result(status, proposal.get("explanation", "外部提案需要进一步澄清。"), scope=scope, kind=kind)
         rows = expand_segments(proposal["action_segments"])
+        if intent.operation == "set":
+            requested = set(intent.keys)
+            protected = MOVEMENT_KEYS if scope == "camera" else CAMERA_KEYS if scope == "movement" else set()
+            retained = set().union(*(set(row) & protected for row in original)) if original else set()
+            actual = set().union(*(set(row) for row in rows))
+            if not requested.issubset(actual) or actual - requested - retained:
+                raise ValueError("proposal drops requested directions or introduces unrelated controls")
         preserved = _preserved(rows, original, scope)
         if scope != "all" and not preserved:
             raise ValueError("proposal changes controls outside the requested edit_scope")
@@ -316,6 +327,12 @@ def _validate_proposal(proposal, intent, original):
                      or (intent.operation == "lengthen" and before < after))
             if not valid:
                 raise ValueError("proposal does not perform the requested duration edit")
+            if '减半' in intent.text or '一半' in intent.text:
+                if before % 2:
+                    raise ValueError("explicit half-duration edit needs an even original frame count")
+                expected = max(1, before // 2) if intent.operation == 'shorten' else before + max(1, before // 2)
+                if after != expected:
+                    raise ValueError("proposal does not match the explicitly requested duration ratio")
             if any(set(a) - {key} != set(b) - {key} for a, b in zip(rows, original)):
                 raise ValueError("duration edit changes unrelated controls")
         return _result("ready", "外部提案已通过结构和编辑范围验证；这不验证生成画面或任务完成。",

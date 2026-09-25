@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from training.demo.contracts import require, write_json
 from training.demo.service import make_server as make_demo_server, QueueFullError
-from training.creator.planner import plan_request
+from training.creator.planner import plan_request, expand_segments, KEYS
 
 
 class CreatorService:
@@ -133,6 +133,28 @@ class CreatorService:
         require(job.get('status') == 'completed', 'a completed real generation is required')
         return self.demo.deployment.jobs_root / version['job_id']
 
+    def _reference_version(self, session, version):
+        """Find the completed parent plan, including its successful retry.
+
+        A retry is the same plan, not a distinct visual-edit baseline. Never
+        silently use another scene/session or an arbitrary earlier candidate.
+        """
+        logical = version
+        seen = set()
+        while logical.get('retry_of'):
+            require(logical['version_id'] not in seen, 'cyclic retry lineage')
+            seen.add(logical['version_id'])
+            logical = self._version(session, logical['retry_of'])
+        if not logical.get('parent_version'):
+            return None
+        parent = self._version(session, logical['parent_version'])
+        candidates = [v for v in session['versions']
+                      if v['version_id'] != version['version_id']
+                      and v['root_request'] == parent['root_request']
+                      and v['plan']['action_segments'] == parent['plan']['action_segments']
+                      and self.demo.jobs.get(v.get('job_id'), {}).get('status') == 'completed']
+        return max(candidates, key=lambda v: v['created_at']) if candidates else None
+
     def retry(self, payload):
         """Explicit bounded retry of a failed job, without another model plan."""
         rid = payload.get('request_id')
@@ -181,15 +203,25 @@ class CreatorService:
             version = self._version(session, payload['version_id'])
             require(not version.get('review') or version['review'].get('source') != 'human', 'human review already exists; automatic review cannot overwrite it')
             directory = self._completed(version)
+            reference = self._reference_version(session, version)
+            # Keep the actual user's constraint even if a model-written goal
+            # accidentally omitted "continuous" or a relative duration edit.
+            goals = list(dict.fromkeys([*version['plan']['goals'], '用户当前请求：' + version['text']]))
             op = 'inspect:' + version['version_id']
             require(op not in self.operations, 'inspection already running')
             self.operations[op] = True
         try:
-            result = self.provider.inspect(str(directory / 'raw.mp4'), version['plan']['goals'])
+            if reference is None:
+                result = self.provider.inspect(str(directory / 'raw.mp4'), goals)
+            else:
+                result = self.provider.inspect(str(directory / 'raw.mp4'), goals,
+                    reference_video_path=str(self._completed(reference) / 'raw.mp4'))
             require(isinstance(result, dict) and result.get('verdict') in ('satisfied', 'unsatisfied', 'uncertain'), 'invalid visual assessment')
             require(result.get('decision') in ('accept', 'revise', 'ask_user', 'stop'), 'invalid visual decision')
-            result['model_decision'] = result['decision']
-            result['model_revision_text'] = result.get('revision_text', '')
+            original_judgment = result.get('original_model_judgment')
+            original_judgment = original_judgment if isinstance(original_judgment, dict) else result
+            result['model_decision'] = original_judgment['decision']
+            result['model_revision_text'] = original_judgment.get('revision_text', '')
             require(isinstance(result.get('evidence'), list) and
                     (result['evidence'] or result['verdict'] == 'uncertain'), 'definite visual assessment must cite temporal observations')
             for evidence in result['evidence']:
@@ -201,9 +233,15 @@ class CreatorService:
             if result['decision'] == 'revise':
                 require(result['verdict'] == 'unsatisfied' and isinstance(result.get('revision_text'), str) and result['revision_text'].strip(), 'revision requires an observed failure and specific edit')
             result.update(source='model_assessment', provider=getattr(self.provider, 'name', 'local_model_command'),
-                          calibrated=False, created_at=time.time(), automatic_acceptance=False)
+                          calibrated=False, created_at=time.time(), automatic_acceptance=False,
+                          reference_available=reference is not None,
+                          reference_used=result.get('reference_used') is True,
+                          reference_version_id=reference['version_id'] if reference else None,
+                          reference_job_id=reference['job_id'] if reference else None)
             with self.lock:
                 require(not version.get('review') or version['review'].get('source') != 'human', 'human review arrived; model assessment discarded')
+                if version.get('review'):
+                    version.setdefault('review_history', []).append(copy.deepcopy(version['review']))
                 version['review'] = result
                 self._save(session)
                 return self.snapshot(session)
@@ -233,10 +271,24 @@ class CreatorService:
             self.operations[op] = True
             text = review['revision_text']
             previous = copy.deepcopy(version['plan'])
+            reference = self._reference_version(session, version)
+            user_text = version['text']
             head = session['versions'][-1]['version_id']
         try:
             proposal = self.provider.plan(text, previous)
             plan = plan_request(text, previous=previous, proposal=proposal)
+            require(plan['status'] == 'ready', 'visual revision did not produce an executable plan; ask the user')
+            before, after = expand_segments(previous['action_segments']), expand_segments(plan['action_segments'])
+            require(before != after, 'visual revision made no input change; no new version was created')
+            scope = previous.get('edit_scope', 'all')
+            protected = set(KEYS[:4] if scope == 'camera' else KEYS[4:] if scope == 'movement' else ())
+            require(all(set(a) & protected == set(b) & protected for a, b in zip(before, after)),
+                    'visual revision changed controls protected by the user edit scope')
+            # A feedback edit must still meet the user's original edit request.
+            # A shortened action must not be lengthened back to its parent span.
+            user_check = plan_request(user_text, previous=reference['plan'] if reference else None,
+                proposal={**plan, 'edit_scope': previous.get('edit_scope', 'all')})
+            require(user_check['status'] == 'ready', 'visual revision contradicts the original user instruction')
             with self.lock:
                 require(session['versions'][-1]['version_id'] == head, 'a newer user edit arrived; automatic revision discarded')
                 require(version.get('review') == review, 'review changed while planning; automatic revision discarded')
