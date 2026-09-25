@@ -238,3 +238,6 @@ checkpoints/
 *.key
 .env.*
 !.env.example
+
+# Operator-written revision marker for a source-only remote deployment.
+.source-revision

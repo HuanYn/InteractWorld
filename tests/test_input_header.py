@@ -3,14 +3,16 @@ import hashlib
 import io
 import shutil
 import subprocess
-from unittest.mock import patch
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
 from training.eval.input_header import (
     ARROW_LABELS, HEADER_HEIGHT, HUD_KEY_ALPHA, KEY_ACTIVE, KEY_IDLE,
-    InputHeaderRenderer, _load_font, annotate_video,
+    InputHeaderRenderer, _load_font, _probe_video, annotate_video,
 )
 
 
@@ -20,6 +22,86 @@ def _inputs():
     actions[0, 0] = 1
     actions[1, 1] = 1
     return frame, actions
+
+
+@pytest.mark.parametrize("count_frames", [False, True])
+@pytest.mark.parametrize("average_rate", [Fraction(30000, 1001), None])
+def test_probe_without_ffprobe_uses_pyav_and_counts_decoded_frames(tmp_path, count_frames, average_rate):
+    # Unit doubles verify fallback contracts, not a generated model video.
+    stream = SimpleNamespace(width=832, height=480, average_rate=average_rate,
+                             base_rate=Fraction(16), frames=999)
+    container = MagicMock()
+    container.__enter__.return_value = container
+    container.streams.video = [stream]
+    container.decode.return_value = iter([object(), object(), object(), object()])
+    av_module = SimpleNamespace(open=MagicMock(return_value=container))
+    source = tmp_path / "unit-only.mp4"
+    with patch("training.eval.input_header.shutil.which", return_value=None), \
+         patch.dict(sys.modules, {"av": av_module}), \
+         patch("training.eval.input_header.subprocess.run") as run:
+        result = _probe_video(source, count_frames=count_frames)
+    assert result == dict(width=832, height=480, fps=average_rate or Fraction(16),
+                          frames=4 if count_frames else None)
+    assert isinstance(result["fps"], Fraction)
+    av_module.open.assert_called_once_with(str(source), mode="r")
+    if count_frames:
+        container.decode.assert_called_once_with(stream)
+    else:
+        container.decode.assert_not_called()
+    container.__exit__.assert_called_once()
+    run.assert_not_called()
+
+
+def test_probe_without_ffprobe_or_av_gives_explicit_dependency_error(tmp_path):
+    with patch("training.eval.input_header.shutil.which", return_value=None), \
+         patch.dict(sys.modules, {"av": None}):
+        with pytest.raises(RuntimeError, match="ffprobe is unavailable.*PyAV 'av'"):
+            _probe_video(tmp_path / "unit-only.mp4")
+
+
+@pytest.mark.parametrize("streams,message", [
+    ([], "expected one selected video stream"),
+    ([SimpleNamespace(width=832, height=480, average_rate=None, base_rate=None)], "no valid frame rate"),
+])
+def test_pyav_probe_rejects_missing_video_or_frame_rate(tmp_path, streams, message):
+    container = MagicMock()
+    container.__enter__.return_value = container
+    container.streams.video = streams
+    with patch("training.eval.input_header.shutil.which", return_value=None), \
+         patch.dict(sys.modules, {"av": SimpleNamespace(open=MagicMock(return_value=container))}):
+        with pytest.raises(ValueError, match=message):
+            _probe_video(tmp_path / "unit-only.mp4", count_frames=True)
+    container.decode.assert_not_called()
+    container.__exit__.assert_called_once()
+
+
+def test_available_ffprobe_keeps_existing_command_and_fraction(tmp_path):
+    source = tmp_path / "unit-only.mp4"
+    response = SimpleNamespace(stdout='{"streams":[{"width":832,"height":480,"avg_frame_rate":"0/0",'
+                                        '"r_frame_rate":"30000/1001","nb_read_frames":"4"}]}')
+    with patch("training.eval.input_header.shutil.which", return_value="/existing/ffprobe"), \
+         patch.dict(sys.modules, {"av": None}), \
+         patch("training.eval.input_header.subprocess.run", return_value=response) as run:
+        result = _probe_video(source, count_frames=True)
+    assert result == dict(width=832, height=480, fps=Fraction(30000, 1001), frames=4)
+    run.assert_called_once_with(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
+         "stream=width,height,r_frame_rate,avg_frame_rate,nb_read_frames", "-of", "json", str(source)],
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+
+
+def test_pyav_decode_failure_propagates_without_a_synthetic_count(tmp_path):
+    stream = SimpleNamespace(width=832, height=480, average_rate=Fraction(16), base_rate=None)
+    container = MagicMock()
+    container.__enter__.return_value = container
+    container.streams.video = [stream]
+    container.decode.side_effect = RuntimeError("unit-test decode failure")
+    with patch("training.eval.input_header.shutil.which", return_value=None), \
+         patch.dict(sys.modules, {"av": SimpleNamespace(open=MagicMock(return_value=container))}):
+        with pytest.raises(RuntimeError, match="unit-test decode failure"):
+            _probe_video(tmp_path / "unit-only.mp4", count_frames=True)
+    container.__exit__.assert_called_once()
 
 
 def test_legacy_inline_header_preserves_body_and_action_frame_offset():
@@ -182,6 +264,32 @@ def test_encoder_failure_kills_both_processes_and_preserves_source(tmp_path):
     assert decoder.killed and encoder.killed
     assert not output.exists()
     assert source.read_bytes() == b"original source evidence"
+    assert list(tmp_path.glob(".input-header-*")) == []
+
+
+def test_decoder_uses_legacy_passthrough_and_logs_error_before_cleanup(tmp_path, capsys):
+    frame, actions = _inputs()
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"unchanged source evidence")
+    decoder = MagicMock(stdin=None, stdout=io.BytesIO())
+    decoder.poll.return_value = decoder.wait.return_value = 1
+    encoder = MagicMock(stdin=io.BytesIO(), stdout=None)
+    encoder.poll.return_value = None
+
+    def spawn(command, **kwargs):
+        if "pipe:1" in command:
+            assert "-fps_mode" not in command and command[command.index("-vsync") + 1] == "0"
+            kwargs["stderr"].write(b"specific software decoder failure\n")
+            return decoder
+        return encoder
+
+    with patch("training.eval.input_header._probe_video", return_value={"width": 832, "height": 32, "fps": Fraction(16)}), \
+         patch("training.eval.input_header._font_candidates", return_value=[]), \
+         patch("training.eval.input_header.subprocess.Popen", side_effect=spawn):
+        with pytest.raises(RuntimeError, match="source decoding failed"):
+            annotate_video(source, tmp_path / "display.mp4", initial_frame=frame, prompt="Walk", actions=actions, seed=0)
+    assert "ffmpeg decoder stderr:\nspecific software decoder failure" in capsys.readouterr().err
+    assert source.read_bytes() == b"unchanged source evidence"
     assert list(tmp_path.glob(".input-header-*")) == []
 
 

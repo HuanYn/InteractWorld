@@ -1,0 +1,110 @@
+# InterActWorld Creator
+
+Creator 是独立的自然语言创作页面，沿用已有的异步视频队列和自训模型接口。旧版按键编辑页面与生成方法保持独立。新增代码位于 [`training/creator`](../training/creator)，入口为 [`scripts/serve_creator.py`](../scripts/serve_creator.py)。
+
+当前进展（2026-09-25）：Qwen 已在真实 GPU 上完成合法动作计划及局部修改，原版和修改版也已完成真实 GPU 视频生成。原 worker 的输入栏封装失败后，通过 CPU 恢复使两个任务达到 `completed`，原失败记录保留。两版均为832×480、241帧、16 fps；修改保持 W 输入240帧，将 I 输入从120帧缩短到60帧。真实视觉观察不足以可靠判断动作或提出修订，当前降级为人工审核，人工评价尚未填写。视觉反馈修订默认关闭，不能声称视频质量、精确动作响应或反馈收益已验收。实际报告位置见文末，[面试讲解](creator-interview.md)区分已实现机制与已观察结果。
+
+## 使用流程
+
+1. 选择固定首图、冻结静态提示词与随机种子，输入动作描述，例如“先前进，然后抬头”。
+2. 点击“编排动作计划”，核对按键、每段时长、修改范围和编排来源。只有 `ready` 计划可以生成；`clarify` 和 `unsupported` 需要修改描述。
+3. 点击“确认并生成”，显式提交真实模型任务。页面显示异步状态、最近两版视频与原始视频下载，刷新后可恢复会话。
+4. 人工填写满意度及观察依据，或在已配置视觉模型时请求一次观察。默认将模型建议交给人工审核；接受版本始终需要用户操作。
+5. 只有操作方显式启用视觉反馈修订，且模型提供符合契约的、有时间依据的不满意结论和 `revise` 建议后，才可以编排一次修订。修订仍需再次点击生成，每个原始请求最多一次；人工继续编辑会创建新请求。默认配置不允许这一步，本轮也未继续视觉反馈修订。这是有限机制，尚无可靠自主纠错或改善画质的证据。
+
+运行失败时可以显式点击“重试同一计划”，保持计划、首图、场景和 seed，创建新的任务与版本，保留旧失败证据。连续重试最多两次，不重复调用语言模型。它是执行失败后的重试，与根据视觉内容提出的一次反馈修订分开计数。
+
+同一会话内场景、提示词、首图和 seed 固定。新版本从同一首图重新生成，不是中途改写已有视频；这不是实时游戏。方向键对应模型的 `I/J/K/L`，移动对应 `W/A/S/D`；空按键表示保持。计划覆盖 240 个未来动作帧，16 fps，约 15 秒。
+
+## 启动与配置
+
+先按照[已有部署说明](../training/demo/README.md)准备实际场景资产及 `deployment.json`。文件中的 `host` 保持 `127.0.0.1`，路径指向数据盘。使用独立端口与 `jobs_root` 可与旧服务分开运行；同一个任务根不能由两个服务同时持有。
+
+以下是可选的 CPU 预览方式，不代表当前真实部署仍未获授权：保留 `guard_command: []`，不传模型 provider 配置。
+
+```bash
+CUDA_VISIBLE_DEVICES='' python scripts/serve_creator.py \
+  --deployment /DATA_DISK/creator/deployment.json
+```
+
+浏览器打开启动日志给出的本机地址。空 guard 会拒绝视频生成。远端使用可信 SSH 隧道访问本机端口。
+
+操作方配置好实际模型和 GPU 门禁后，启动模型模式：
+
+```bash
+python scripts/serve_creator.py \
+  --deployment /DATA_DISK/creator/deployment.json \
+  --provider-config /DATA_DISK/creator/provider.json
+```
+
+视觉反馈修订开关 `visual_revision_enabled` 默认为 `False`。上述启动方式可请求模型观察，但会将结论降级为人工审核；只有在启动命令中显式增加 `--enable-visual-revision` 才会开启有限修订机制。开启开关不代表视觉评估或修订收益已经验证。
+
+`provider.json` 包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `argv` | 操作方受控命令的参数数组，必须包含字面占位符 `{request}` 和 `{output}`；不经过 shell |
+| `runtime_root` | 数据盘上的请求、响应、抽帧及诊断文件目录 |
+| `timeout_seconds` | 单次模型命令的有限超时 |
+
+模型 worker 的入口为 `python -m training.creator.model_worker --model LOCAL_MODEL_DIR --request REQUEST_JSON --output OUTPUT_JSON`，应由上述受控命令调用。worker 只加载已有本地 Qwen3-VL 模型，开启离线模式；命令桥接本身不授予 GPU 使用权。真实运行需要外层完成授权、空闲卡检查、共享租约、预算预留与进程监督；视频队列的 `guard_command` 与模型命令门禁分别负责自己的任务。该配置不会下载模型。
+
+已有真实服务也可用有截止时间的客户端记录运行。下例会提交一次计划和生成任务，适用于操作方已启用门禁的服务；报告文件必须是新的数据盘路径：
+
+```bash
+python scripts/creator_delivery.py --url http://127.0.0.1:8881 \
+  --case initial --max-seconds 3600 \
+  --output /DATA_DISK/creator/reports/initial-run-unique.json
+```
+
+`--case edit --session-id SID` 默认请求“保留前进，只缩短抬头”；`--case inspect --session-id SID --version-id VID` 请求指定已完成视频的观察；`--case retry` 搭配同样的两个 ID，仅重试失败版本的既有计划。客户端不会自动修复、接受或视觉修订；超时保留最后已知状态，不会假定服务端任务完成或已经取消。
+
+## 降级方式与边界
+
+未配置 provider 时，页面明确显示 `rule_fallback` 和人工审核。规则编排支持有限的中文/英文方向指令、先后顺序、前后半段及缩短/延长/取消；不能把任意自然语言理解能力归给规则。规则先后动作默认各占 120 帧，单个未指定时段动作默认 240 帧，必须核对实际计划。
+
+外部模型提出的计划也经过动作结构、总帧数、相反按键与编辑范围校验。局部编辑逐帧检查未编辑的动作类别是否保留。跳跃、攻击、物品交互、切换场景或精确导航不属于当前动作接口；有效输入计划不代表视频一定实现目标。
+
+本轮是冻结模型上的推理编排与审核，没有新增 SFT/RL 训练、奖励优化或策略更新。“走到桥边再回头”需要场景目标定位、距离与朝向状态，以及可验证的导航执行能力；当前按键接口不能保证这些语义。只有用户接受近似镜头创作后，才应改成明确的移动和镜头指令，不能静默把精确导航替换为按键时长。
+
+视觉模型只读取生成的 `raw.mp4`，按实际时间戳抽取 8 帧；目标描述作为待检查事项，动作时间线和输入栏视频不作为视觉成功证据。结论标为 `model_assessment`，包含时间点和观察说明，未做置信度校准。稀疏抽帧不能证实连续动作或所有中间事件；模型也可能给出超出证据的确定判断，不能只依赖其自报的不确定性。模型观察不能覆盖已保存的人工审核。
+
+本轮真实 Qwen 观察把摄像机抬头解释为角色头部动作，仅凭8帧断言末尾停止走动，并给出“增加抬头”却又缩短时段的含糊修订。因此当前不继续视觉反馈修订。默认 API 的有效 `decision` 为 `ask_user`，提供降级理由，并保留原始 `model_decision`、建议和原始 JSON 供人工核对；保存这些内容不表示采纳模型判断。人工评价未填写，不能据此宣称修改版更好。
+
+会话保存在 `project_root/sessions`，任务媒体仍保存在 `jobs_root`。模型调用保留请求、响应和日志。失败任务不能被接受或进行视觉审核；异常不会被示例视频或合成结论替代。
+
+## 本机 API
+
+读取接口：`GET /api/config`、`GET /api/sessions`、`GET /api/jobs`。视频：`GET /api/jobs/{job_id}/files/raw.mp4`，输入栏版本为 `inputs.mp4`。
+
+| POST 路径 | 主要字段 | 作用 |
+| --- | --- | --- |
+| `/api/plan` | `scene_id, seed, text, request_id`，可加 `session_id` | 新建会话或计划版本；不会自动生成 |
+| `/api/generate` | `session_id, version_id, request_id` | 显式入队；同一版本重复请求不重复生成 |
+| `/api/retry` | `session_id, version_id, request_id` | 失败版本用同一计划创建新版本和新任务；不再调用编排模型 |
+| `/api/review` | `session_id, version_id, verdict, evidence` | 保存人工结论和非空文字依据 |
+| `/api/inspect` | `session_id, version_id` | 按需视觉观察；未配置模型时报错 |
+| `/api/revise` | `session_id, version_id, request_id` | 仅在显式启用视觉反馈修订后，根据有效模型观察编排一次修订 |
+| `/api/accept` | `session_id, version_id` | 接受一个完成生成的版本 |
+
+POST 返回当前会话；使用 `Content-Type: application/json` 和配置接口给出的 `X-InterActWorld-CSRF`，并要求正确的同源 `Origin`。`verdict` 为 `satisfied / unsatisfied / uncertain`。自然语言及人工反馈最多 2000 字。
+
+## 验证状态
+
+新增服务边界测试使用明确标注的内存队列与 provider 测试替身，不进行 GPU 推理、不产生项目实验结果：
+
+```bash
+python -m pytest -q tests/test_creator_planner.py tests/test_creator_service.py
+```
+
+Creator 页面已通过模拟 API 下的本机无头浏览器检查：编排与生成分离、无自动 POST、同源请求头、文本转义、会话恢复、视频轮询保留播放元素、人工审核和移动端布局。CPU/浏览器测试不证明模型画质或动作可靠性。
+
+真实原版与修改版均已完成生成。原 worker 因输入栏封装失败结束，随后 CPU 恢复封装，两任务状态为 `completed`；原失败日志和恢复过程分别保留。原视频均为832×480、241帧、16 fps，API 视频 Range 请求已验证返回 `206`。这些事实证明本轮媒体交付链路完成，不证明动作命中、画质改善或视觉反馈收益。
+
+原视频 worker 墙钟分别为474.15秒和474.76秒，包含预检及失败封装，不是纯模型推理时间；CPU 恢复分别约5.8秒和5.9秒。视频生成模型的精确耗时与峰值显存未知，13748 MiB 只是一次显存观测，不能标为峰值或性能基准。另一次 Qwen 视觉检查 worker 实测58.72秒、分配显存峰值（peak allocated）9.22 GiB；这是视觉检查的记录，不是视频生成耗时，也不是整卡总显存峰值。人工评价尚未填写，未进行反馈修订收益验证。
+
+降级已经部署并经过真实 HTTP 验证：配置返回 `visual_revision_enabled=false`，两个视频任务为 `completed`；观察的有效决策为 `ask_user`，同时保留原 `model_decision=revise`。`POST /api/revise` 返回 `400`，会话与队列未改变。收束时 GPU 队列为空。
+
+本轮保守预算记账为0.60782 GPU小时，包括失败及保守计入的 CPU 等待，不等于纯 GPU 计算耗时。存储保守上界为399.933 / 400 GB，已接近上限；本次交付不承诺额外批量生成，继续运行前需复核实际存储和剩余预算。
+
+本轮操作材料位于工作区 `reports/interactworld-creator-20260925/`，离线对照页为其下 `demo/index.html`。其中 `scripted-edit-run-v2.json` 保留真实计划及局部编辑响应，也保留当次客户端连接中断；它本身不是视频成功验收报告。生成、恢复和观察的依据为服务端数据盘 `creator-runtime` 中的实际运行报告、会话 JSON、`jobs/<job_id>/` 下的原视频及日志。引用结果时需对应实际任务 ID 和记录，不将原 worker 的失败改写为首次执行成功。私人部署、授权和完整运行材料不随公开源码分发。

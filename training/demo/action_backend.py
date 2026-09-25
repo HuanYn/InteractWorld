@@ -58,31 +58,39 @@ def load_action_inputs(raw, scene):
     """CPU-only exact checkpoint/artifact/text binding; no future video/shard read."""
     import torch
     from training.config import load_config
-    from train_action_teacher import _manifest_hashes
     from training.models.action_adapter import validate_action_scale
+    from training.demo.relocation import ArtifactHashes, artifact_paths, relocate_path, relocated_manifest_hashes, validate_relocations
     validate_action_config(raw)
     spec = raw['lineage']
     path = Path(spec['checkpoint_path'])
-    require(sha256(path) == spec['checkpoint_sha256'].lower(), 'Action checkpoint SHA mismatch')
+    verification_cache = spec.get('verification_cache')
+    digest = (ArtifactHashes(verification_cache, protected_paths=[path, *spec['artifact_paths'].values(),
+                  Path(spec['expected_base_model_path']) / 'Wan2.2_VAE.pth'])
+              if verification_cache is not None else sha256)
+    require(digest(path) == spec['checkpoint_sha256'].lower(), 'Action checkpoint SHA mismatch')
     config_path = Path(spec['artifact_paths']['training_config'])
     config = load_config(config_path)
-    hashes = _manifest_hashes(config, config_path)
-    require(set(hashes) == set(spec['artifact_paths']), 'Action artifact schema changed')
-    expected_paths = dict(dataset_manifest=config.data.manifest_path,
-                          training_config=str(config_path),
-                          prompt_cache=config.data.prompt_cache_path)
-    from training.data.action_dataset import cache_index_path
-    index = cache_index_path(config.data.manifest_path)
-    expected_paths.update(feature_index=str(index), feature_receipt=str(index.with_suffix('.jsonl.receipt.json')),
-                          prompt_cache_receipt=str(Path(config.data.prompt_cache_path).with_suffix('.pt.receipt.json')))
-    require(all(Path(spec['artifact_paths'][key]).resolve() == Path(value).resolve() for key, value in expected_paths.items()),
-            'Action artifact paths differ from original training contract')
     payload = torch.load(path, map_location='cpu', weights_only=False)
     require(payload.get('format_version') == 1 and payload.get('stage') == ACTION_STAGE
             and type(payload.get('step')) is int and payload['step'] > 0, 'not a completed self-trained Action checkpoint')
     compare_saved_config(payload.get('config'), config.to_dict(), payload['step'])
+    # Compare original serialized fields before any in-memory relocation. The
+    # map affects only file access, never checkpoint/YAML/receipt contents.
+    relocations = validate_relocations(spec.get('path_relocations', {}))
+    expected_paths = artifact_paths(config, config_path, relocations)
+    require(config.data.prompt_cache_path is not None, 'Action UI requires the actual static prompt cache')
+    require(set(expected_paths) == set(spec['artifact_paths']), 'Action artifact schema changed')
+    require(all(Path(spec['artifact_paths'][key]).resolve() == value.resolve() for key, value in expected_paths.items()),
+            'Action artifact paths differ from original training contract after explicit relocation')
+    base_model_path = relocate_path(config.model.base_model_path, relocations)
+    require(Path(spec['expected_base_model_path']).resolve() == base_model_path.resolve(), 'Action base-model pin changed')
+    if relocations or verification_cache is not None:
+        hashes = relocated_manifest_hashes(config, config_path, relocations,
+                                          verifier=digest if verification_cache is not None else None)
+    else:
+        from train_action_teacher import _manifest_hashes
+        hashes = _manifest_hashes(config, config_path)
     require(payload.get('manifest_hashes') == hashes, 'checkpoint data/config/static-prompt hashes changed')
-    require(spec['expected_base_model_path'] == config.model.base_model_path, 'Action base-model pin changed')
     scale = validate_action_scale(config.model.action_scale)
     require(scale > 0, 'Action demo requires a nonzero actual conditioning scale')
     state = payload.get('trainable_model')
@@ -92,9 +100,13 @@ def load_action_inputs(raw, scene):
     lineage = dict(path=str(path.resolve()), sha256=spec['checkpoint_sha256'], stage=ACTION_STAGE,
                    step=payload['step'], config=payload['config'], manifest_hashes=hashes,
                    initialization=payload.get('initialization'), action_scale=scale)
+    if relocations:
+        lineage.update(path_relocations=relocations,
+                       resolved_artifact_paths={key: str(value.resolve()) for key, value in expected_paths.items()},
+                       resolved_base_model_path=str(base_model_path.resolve()))
     del payload
     gc.collect()
-    cache_path = Path(config.data.prompt_cache_path)
+    cache_path = expected_paths['prompt_cache']
     receipt = json.loads(cache_path.with_suffix('.pt.receipt.json').read_text(encoding='utf-8'))
     binding = receipt.get('episodes', {}).get(scene['source_episode_id'])
     require(binding and binding.get('split') == 'dev' and binding.get('prompt') == scene['prompt'],
@@ -114,10 +126,12 @@ def load_action_inputs(raw, scene):
     lineage['prompt_condition'] = dict(policy='scene_static_only_v1', text=scene['prompt'],
                                       episode_id=scene['source_episode_id'], cache_sha256=hashes['prompt_cache'],
                                       embedding_sha256_float32=tensor_sha(prompt), shape=list(prompt.shape), t5_loaded=False)
-    vae_path = Path(config.model.base_model_path) / 'Wan2.2_VAE.pth'
-    require(sha256(vae_path) == VAE_SHA256, 'Wan VAE differs from the verified Action cache/inference VAE')
+    vae_path = base_model_path / 'Wan2.2_VAE.pth'
+    require(digest(vae_path) == VAE_SHA256, 'Wan VAE differs from the verified Action cache/inference VAE')
     lineage['vae'] = dict(path=str(vae_path), sha256=VAE_SHA256)
-    return state, config.model, prompt, lineage
+    runtime_model = copy.deepcopy(config.model)
+    runtime_model.base_model_path = str(base_model_path)
+    return state, runtime_model, prompt, lineage
 
 
 def rollout_chunks(*, initial_latent, initial_rgb, prompt, actions, seed, generate, decode, encode, emit, window6=False):
@@ -300,8 +314,10 @@ def _generate_action_video(*, state, model_config, prompt, initial, actions, see
     from training.longforcing_lite import euler_sigmas
     from training.eval.rollout15s import ffmpeg_writer_factory
     require(initial.shape == (HEIGHT, WIDTH, 3) and initial.dtype == np.uint8, 'actual initial RGB is invalid')
+    print('Action loading: base model load starting', flush=True)
     model = wrappers.WanDiffusionWrapper(model_name=model_config.base_model_path, model_type='ci2v',
                                          is_causal=False, timestep_shift=5.0, downscale_factor_control_adapter=16)
+    print('Action loading: base model load complete', flush=True)
     if joint or window6:
         require(model.is_causal is False and model.uniform_timestep is True, 'Action windows require the noncausal wrapper')
     summary = configure_action_teacher(model.model, rank=model_config.lora_rank,
@@ -309,9 +325,13 @@ def _generate_action_video(*, state, model_config, prompt, initial, actions, see
     require({name for name, value in model.named_parameters() if value.requires_grad} == set(state), 'Action trainable tensor names mismatch')
     load_trainable_state_dict(model, state)
     state.clear()
+    print('Action loading: trained LoRA and action adapter restored', flush=True)
     model.requires_grad_(False).eval().to(dtype=torch.bfloat16)
+    print('Action loading: model BF16 conversion complete', flush=True)
+    print('Action loading: VAE load starting', flush=True)
     vae = wrappers.WanVAEWrapper(pretrained_path=str(Path(model_config.base_model_path) / 'Wan2.2_VAE.pth'))
     vae.requires_grad_(False).eval().to(dtype=torch.bfloat16)
+    print('Action loading: VAE load and BF16 conversion complete', flush=True)
     peak = 0
 
     def capture_peak():
@@ -325,13 +345,16 @@ def _generate_action_video(*, state, model_config, prompt, initial, actions, see
         vae.to('cuda')
 
     def encode(pixel, index):
+        print(f'Action encoding: {"initial frame" if index < 0 else "window " + str(index + 1) + " endpoint"} starting', flush=True)
         vae_on_gpu()
         with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
             value = vae.encode_to_latent(pixel.to(device='cuda', dtype=torch.bfloat16)).detach().cpu()
         capture_peak()
+        print('Action encoding: complete', flush=True)
         return value
 
     def generate(first, text, keys, noise, index):
+        print(f'Action generation: window {index + 1} starting', flush=True)
         vae.to('cpu')
         gc.collect()
         torch.cuda.empty_cache()
@@ -345,15 +368,19 @@ def _generate_action_video(*, state, model_config, prompt, initial, actions, see
             current = euler_rollout(model, first=condition, noise=noise.to(device='cuda', dtype=torch.bfloat16),
                                     conditions=conditions, sigmas=sigmas)
         capture_peak()
-        return current.detach().cpu()
+        result = current.detach().cpu()
+        print(f'Action generation: window {index + 1} complete', flush=True)
+        return result
 
     def decode(latent, index):
+        print(f'Action decoding: {"slice" if joint else "window"} {index + 1} starting', flush=True)
         vae_on_gpu()
         if joint and index == 0:
             vae.model.clear_cache()
         with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
             value = vae.decode_to_pixel(latent.to(device='cuda', dtype=torch.bfloat16), use_cache=joint, return_in_cpu=True)
         capture_peak()
+        print(f'Action decoding: {"slice" if joint else "window"} {index + 1} complete', flush=True)
         return value
 
     writer = ffmpeg_writer_factory(output_path, WIDTH, HEIGHT, 16)

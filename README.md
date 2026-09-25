@@ -4,6 +4,8 @@
 
 在官方 Wan2.2-TI2V-5B 预训练基座上训练动作 Adapter 和 LoRA，将首图、静态场景文本及按键时间线接入视频生成，并提供异步网页 Demo。复用 ABot 兼容的控制接口与部分训练思路，不使用其成品模型代替本项目训练，也不把上游实时性能当成本项目结果。
 
+新增 [InterActWorld Creator](docs/creator.md)：自然语言编排、严格动作计划、真实视频生成、局部修改与版本比较。已验证两版真实输出，以及保留240帧前进输入、将抬头输入从120帧缩短到60帧的编辑约束；这不代表画质或动作响应改善。视觉反馈未达到可靠自动修订标准，默认人工审核，运行失败及恢复记录保留。本轮是推理工作流，没有新增 RL 训练。详见[实测状态与启动方法](docs/creator.md)和[面试讲解](docs/creator-interview.md)。
+
 ## Demo 视频与版本对照
 
 ### 精选生成样例
@@ -34,7 +36,7 @@
 
 [观看完整16 FPS视频](https://huanyn.github.io/InteractWorld/#action-r005-1040-window6)
 
-顶部是实际首图和静态提示词，左侧WASD、右侧箭头表示模型收到的控制输入。GIF为4 FPS压缩抽帧预览，点击图片或“观看完整16 FPS视频”进入在线播放器，可播放、拖动和全屏观看实际视频；没有剪去后半段、插帧或循环补时。这次仅重新选片和调整展示，没有重训或新生成。
+顶部是实际首图和静态提示词，左侧WASD、右侧箭头表示模型收到的控制输入。GIF为4 FPS压缩抽帧预览，点击图片或“观看完整16 FPS视频”进入在线播放器，可播放、拖动和全屏观看实际视频；没有剪去后半段、插帧或循环补时。上述历史展示页的更新仅重新选片和调整展示；Creator 的新增运行及其验证状态单独记录，不借用这些样片作为本轮结果。
 
 ### 训练过程与完整对照
 
@@ -162,6 +164,7 @@ Action R005 的结构模板见 [R005配置](configs/train/action_teacher_5090_re
 | [training/models](training/models) | 动作适配器与LoRA |
 | [train_action_teacher.py](train_action_teacher.py) | Action训练、阶段迁移与恢复 |
 | [training/demo](training/demo) | 输入契约、Action推理、异步服务与页面 |
+| [training/creator](training/creator) | 自然语言计划、局部编辑、版本管理与受限视觉反馈 |
 | [scripts](scripts) | 数据、缓存、配置和媒体工具 |
 | [tests](tests) | CPU契约与边界测试 |
 | [REPRODUCTION.json](REPRODUCTION.json) | 脱敏源码导出身份与逐文件哈希 |

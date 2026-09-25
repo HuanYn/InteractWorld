@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 from fractions import Fraction
 from typing import Any
@@ -257,6 +258,24 @@ class InputHeaderRenderer:
 
 
 def _probe_video(path: Path, *, count_frames: bool = False) -> dict:
+    if not shutil.which("ffprobe"):
+        try:
+            import av
+        except ImportError as error:
+            raise RuntimeError("ffprobe is unavailable; install the PyAV 'av' dependency for CPU video probing") from error
+        # PyAV uses software decoding by default. Count decoded frames when
+        # requested: container metadata may omit or misreport the frame count.
+        with av.open(str(path), mode="r") as container:
+            streams = container.streams.video[:1]
+            if len(streams) != 1:
+                raise ValueError("expected one selected video stream")
+            stream = streams[0]
+            rate = stream.average_rate or stream.base_rate
+            if not rate:
+                raise ValueError("selected video stream has no valid frame rate")
+            return {"width": int(stream.width), "height": int(stream.height),
+                    "fps": Fraction(rate),
+                    "frames": sum(1 for _ in container.decode(stream)) if count_frames else None}
     command = ["ffprobe", "-v", "error", "-select_streams", "v:0"]
     if count_frames:
         command.append("-count_frames")
@@ -331,7 +350,9 @@ def annotate_video(source: Path, output: Path, *, initial_frame: np.ndarray, pro
             try:
                 decoder = subprocess.Popen(
                     ["ffmpeg", "-nostdin", "-v", "error", "-noautorotate", "-i", str(source),
-                     "-map", "0:v:0", "-an", "-sn", "-dn", "-fps_mode", "passthrough",
+                     # -vsync 0 preserves decoded frames on both the deployed
+                     # FFmpeg 4.2 and newer releases (-fps_mode requires newer).
+                     "-map", "0:v:0", "-an", "-sn", "-dn", "-vsync", "0",
                      "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
                     stdout=subprocess.PIPE, stderr=decoder_log,
                 )
@@ -358,12 +379,19 @@ def annotate_video(source: Path, output: Path, *, initial_frame: np.ndarray, pro
                 if encoder.wait(timeout=60) != 0:
                     raise RuntimeError("ffmpeg annotated-video encoding failed")
             except BaseException as error:
-                for log in (decoder_log, encoder_log):
+                for label, log in (("decoder", decoder_log), ("encoder", encoder_log)):
                     log.flush()
                     log.seek(0)
                     tail = log.read().decode("utf-8", errors="replace")[-3000:]
-                    if tail and hasattr(error, "add_note"):
-                        error.add_note(tail)
+                    if tail:
+                        detail = f"ffmpeg {label} stderr:\n{tail}"
+                        # The deployed Python 3.10 lacks Exception.add_note.
+                        # Always retain diagnostics in worker.log before the
+                        # temporary directory is removed, without changing the
+                        # exception type or swallowing the original failure.
+                        print(detail, file=sys.stderr, flush=True)
+                        if hasattr(error, "add_note"):
+                            error.add_note(detail)
                 raise
             finally:
                 _stop_process(decoder)
