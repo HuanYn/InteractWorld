@@ -114,6 +114,21 @@ def test_numeric_new_plan_uses_patch_only_prompt_and_keeps_all_scope(tmp_path, m
     assert worker._read_json(seen[0][1])['requested_edit_scope'] == 'all'
 
 
+def test_malformed_model_json_is_not_repaired_or_promoted_to_success(tmp_path, monkeypatch):
+    from training.creator import model_worker as worker
+    (tmp_path / 'config.json').write_text('{}')
+    raw = ' {"status":"ready","edits":[  '
+    def malformed(*args):
+        return worker.decode_model_response(raw)
+    monkeypatch.setattr(worker, '_generate', malformed)
+    result = worker.execute_request(tmp_path, dict(kind='plan', text='前4秒向右移动，然后低头2秒',
+                                                  previous_plan=None, capabilities={}), tmp_path)
+    assert result['status'] == 'clarify' and result['edits'] == [] and result['edit_scope'] == 'all'
+    assert (tmp_path / 'model-response.txt').read_text(encoding='utf-8') == raw
+    validation = json.loads((tmp_path / 'model-validation.json').read_text(encoding='utf-8'))
+    assert validation['error_type'] == 'invalid_model_json' and validation['json_repaired'] is False
+
+
 @pytest.mark.parametrize('template,expected', [
     ('{{ messages }}', {}),
     ('{% if enable_thinking %}<think>{% endif %}', {'enable_thinking': False}),
