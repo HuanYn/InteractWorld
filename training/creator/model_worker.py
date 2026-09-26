@@ -417,6 +417,8 @@ def _offline_environment(runtime_root):
     cache = runtime_root / "cache"
     values = {"HF_HOME": cache / "huggingface", "HF_HUB_CACHE": cache / "huggingface" / "hub",
               "XDG_CACHE_HOME": cache, "TORCH_HOME": cache / "torch", "TMPDIR": runtime_root,
+              "CUDA_CACHE_PATH": cache / "cuda", "TRITON_CACHE_DIR": cache / "triton",
+              "TORCHINDUCTOR_CACHE_DIR": cache / "inductor", "PYTORCH_KERNEL_CACHE_PATH": cache / "kernels",
               "TMP": runtime_root, "TEMP": runtime_root}
     for name, path in values.items():
         path.mkdir(parents=True, exist_ok=True)

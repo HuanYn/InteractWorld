@@ -354,3 +354,17 @@ def test_retry_requires_new_directory_to_preserve_killed_worker_diagnostics(tmp_
     with pytest.raises(ValueError, match='existing worker progress'):
         _WorkerProgress(tmp_path)
     assert progress.path.read_bytes() == before
+
+
+def test_offline_setup_creates_kernel_cache_directories_without_importing_models(tmp_path, monkeypatch):
+    from training.creator import model_worker as worker
+    environment = dict(worker.os.environ)
+    environment['PYTORCH_KERNEL_CACHE_PATH'] = '/unused/external/cache'
+    monkeypatch.setattr(worker.os, 'environ', environment)
+    monkeypatch.setattr(worker.tempfile, 'tempdir', None)
+    worker._offline_environment(tmp_path)
+    for name, leaf in [('CUDA_CACHE_PATH', 'cuda'), ('TRITON_CACHE_DIR', 'triton'),
+                       ('TORCHINDUCTOR_CACHE_DIR', 'inductor'), ('PYTORCH_KERNEL_CACHE_PATH', 'kernels')]:
+        assert Path(environment[name]) == tmp_path / 'cache' / leaf
+        assert Path(environment[name]).is_dir()
+    assert environment['HF_HUB_OFFLINE'] == '1' and environment['WANDB_DISABLED'] == 'true'
