@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from .timeline_patch import compile_edits, edits_from_intervals, seconds_to_frame
+
 
 TOTAL_FRAMES = 240
 FPS = 16
@@ -18,7 +20,8 @@ MOVEMENT_KEYS = frozenset(KEYS[:4])
 CAMERA_KEYS = frozenset(KEYS[4:])
 OPPOSING = (("W", "S"), ("A", "D"), ("I", "K"), ("J", "L"))
 RESULT_FIELDS = frozenset(("status", "explanation", "action_segments", "goals",
-                           "edit_scope", "preserved", "planner_kind"))
+                           "edit_scope", "preserved", "planner_kind", "edit_patch"))
+PROPOSAL_FIELDS = RESULT_FIELDS | {"edits"}
 LABELS = dict(W="向前移动", A="向左移动", S="向后移动", D="向右移动",
               I="镜头抬头", J="镜头向左", K="镜头低头", L="镜头向右")
 
@@ -70,10 +73,13 @@ def compress_segments(rows: list[tuple[str, ...]]) -> list[dict]:
 
 
 def _result(status, explanation, rows=None, goals=None, scope="all", preserved=False,
-            kind="rule_fallback"):
-    return dict(status=status, explanation=explanation,
+            kind="rule_fallback", edit_patch=None):
+    result = dict(status=status, explanation=explanation,
                 action_segments=compress_segments(rows) if rows is not None else [],
                 goals=goals or [], edit_scope=scope, preserved=preserved, planner_kind=kind)
+    if edit_patch is not None:
+        result["edit_patch"] = edit_patch
+    return result
 
 
 # Camera patterns run before movement patterns to avoid treating camera-left as A.
@@ -137,6 +143,71 @@ class _Intent:
     operation: str
     text: str
     actions: list[tuple[int, int, str]]
+    intervals: dict | None = None
+    preserve_other: bool = False
+
+
+_NUMBER = r"(?:\d+(?:\.\d+)?|\.\d+)"
+_OTHER_UNCHANGED = re.compile(r"(?:其余|其他)(?:部分|动作|输入)?(?:都)?(?:保持)?(?:不变|不要动|不改动|不改|不动)")
+
+
+def _timed_intervals(text, actions):
+    """Recognize a bounded explicit-time grammar independently of model output.
+
+    All clauses must be consumed. In particular, unfamiliar modifiers are not
+    dropped merely because an action and a number appear somewhere in them.
+    """
+    marked, cursor = [], 0
+    for start, end, key in actions:
+        marked.extend((text[cursor:start], f"@{key}@"))
+        cursor = end
+    marked.append(text[cursor:])
+    marked = re.sub(r"\s+", "", "".join(marked))
+    clauses = re.split(r"[,，。;；！!]|(?=然后|随后|接着|之后)", marked)
+    intervals, sequence_end = {}, 0
+    saw_action = False
+    for clause in clauses:
+        clause = re.sub(r"^(?:请|帮我|只|仅|把|将)+", "", clause)
+        if clause in ("", "不变", "保持不变"):
+            continue
+        subsequent = bool(re.match(r"(?:然后|随后|接着|之后|再)", clause))
+        clause = re.sub(r"^(?:然后|随后|接着|之后|再|先)", "", clause)
+        match = re.fullmatch(rf"(?:在)?(?:第)?({_NUMBER})(?:到|至|[-—–~～])({_NUMBER})秒(?:期间)?@([WASDIJKL])@", clause)
+        if match:
+            start, end, key = seconds_to_frame(match[1]), seconds_to_frame(match[2]), match[3]
+        else:
+            match = re.fullmatch(rf"前({_NUMBER})秒@([WASDIJKL])@", clause)
+            if match:
+                start, end, key = 0, seconds_to_frame(match[1]), match[2]
+                if subsequent and saw_action:
+                    raise ValueError("前 N 秒与随后执行相冲突")
+            else:
+                match = re.fullmatch(rf"@([WASDIJKL])@({_NUMBER})秒", clause)
+                if match:
+                    if saw_action and not subsequent:
+                        raise ValueError("多个定长动作请用然后/随后明确先后")
+                    start, key = sequence_end if saw_action else 0, match[1]
+                    end = start + seconds_to_frame(match[2])
+                else:
+                    match = re.fullmatch(r"(?:全程|一直|持续)@([WASDIJKL])@", clause)
+                    if not match:
+                        raise ValueError("时间指令未完整识别；请用第 8–10 秒抬头，或前 5 秒前进，然后抬头 3 秒")
+                    start, end, key = 0, TOTAL_FRAMES, match[1]
+                    if subsequent:
+                        raise ValueError("全程动作不能同时要求随后才开始")
+        if end <= start or end > TOTAL_FRAMES:
+            raise ValueError("动作时段须为 0–15 秒内的非空区间")
+        if subsequent and saw_action and start < sequence_end:
+            raise ValueError("明确区间与随后执行的顺序相冲突")
+        intervals.setdefault(key, []).append((start, end))
+        sequence_end, saw_action = end, True
+    if not intervals:
+        raise ValueError("未找到带时间的动作")
+    for values in intervals.values():
+        values.sort()
+        if any(right[0] < left[1] for left, right in zip(values, values[1:])):
+            raise ValueError("同一个动作的区间重叠")
+    return intervals
 
 
 def _parse(text, previous_rows):
@@ -147,7 +218,8 @@ def _parse(text, previous_rows):
         return None, _result("unsupported", "当前只支持 WASD 移动和 IJKL 镜头输入；不能保证物品交互、角色动作、精确导航或创建新场景。")
     keep_move = bool(PRESERVE_MOVEMENT.search(text) or ONLY_CAMERA.search(text))
     keep_camera = bool(PRESERVE_CAMERA.search(text) or ONLY_MOVEMENT.search(text))
-    cleaned = text
+    preserve_other = bool(_OTHER_UNCHANGED.search(text))
+    cleaned = _OTHER_UNCHANGED.sub(" ", text)
     for pattern in (PRESERVE_MOVEMENT, PRESERVE_CAMERA, ONLY_CAMERA, ONLY_MOVEMENT):
         cleaned = pattern.sub(" ", cleaned)
     found, occupied = [], set()
@@ -191,6 +263,14 @@ def _parse(text, previous_rows):
         return None, _result("clarify", "局部修改需要先有一条有效的原始时间线。", scope=scope)
     if not keys:
         return None, _result("clarify", "请明确前进、后退、左右移动，或抬头、低头、镜头向左/向右；单独说转向或减少时间可能有歧义。", scope=scope)
+    if re.search(r"\d", cleaned):
+        if operation != "set":
+            return None, _result("clarify", "精确秒数请用替换区间表达，例如第 8–10 秒抬头；不要混合缩短/延长/取消。", scope=scope)
+        try:
+            intervals = _timed_intervals(cleaned, found)
+        except ValueError as error:
+            return None, _result("clarify", str(error), scope=scope)
+        return _Intent(keys, scope, operation, cleaned, found, intervals, preserve_other), None
     residual = "".join(" " if index in occupied else char for index, char in enumerate(cleaned))
     for pattern in (SHORTEN, LENGTHEN, REMOVE, FILLER):
         residual = pattern.sub("", residual)
@@ -200,7 +280,7 @@ def _parse(text, previous_rows):
         return None, _result("clarify", "缩短、延长或取消时，请指定一个动作。", scope=scope)
     if len(found) != len(keys) and operation == "set":
         return None, _result("clarify", "重复动作的起止时刻不明确，请简化为一个动作或两个先后动作。", scope=scope)
-    return _Intent(keys, scope, operation, cleaned, found), None
+    return _Intent(keys, scope, operation, cleaned, found, preserve_other=preserve_other), None
 
 
 def _preserved(rows, original, scope):
@@ -210,8 +290,57 @@ def _preserved(rows, original, scope):
     return all(set(a) & protected == set(b) & protected for a, b in zip(rows, original))
 
 
+def _legacy_set_intervals(intent):
+    """Attach half/full-span modifiers to the action they describe, not globally."""
+    keys = intent.keys
+    if len(keys) > 2:
+        raise ValueError("规则回退一次最多安排两个动作；请拆分指令。")
+    prefixes, end = [], 0
+    for start, stop, _ in intent.actions:
+        prefixes.append(intent.text[end:start])
+        end = stop
+    tail = intent.text[end:]
+    if len(keys) == 1:
+        prefixes[0] += tail
+    elif any(pattern.search(tail) for pattern in (HALF_EARLY, HALF_LATE, CONTINUOUS)):
+        raise ValueError("请把前半段/后半段/全程写在对应动作之前。")
+    early = [bool(HALF_EARLY.search(prefix)) for prefix in prefixes]
+    late = [bool(HALF_LATE.search(prefix)) for prefix in prefixes]
+    continuous = [bool(CONTINUOUS.search(prefix)) for prefix in prefixes]
+    if any(sum(markers) > 1 for markers in zip(early, late, continuous)):
+        raise ValueError("同一个动作的前半段、后半段和全程要求相冲突。")
+    sequential = len(keys) > 1 and (bool(SEQUENCE.search(intent.text)) or any(early) or any(late))
+    if len(keys) == 2 and (early[0] or late[0]) and not (early[1] or late[1]):
+        raise ValueError("时间段对应的动作不明确，请分别写明两个动作的时段。")
+    if sequential and len(keys) == 2 and continuous[1]:
+        raise ValueError("后执行的动作不能同时从开头全程执行，请明确时段。")
+    intervals = {}
+    for index, key in enumerate(keys):
+        start, stop = (0, 120) if sequential and index == 0 else (120, 240) if sequential else (0, 240)
+        if early[index]:
+            start, stop = 0, 120
+        elif late[index]:
+            start, stop = 120, 240
+        elif continuous[index]:
+            start, stop = 0, 240
+        intervals[key] = [(start, stop)]
+    if len(keys) == 2 and not continuous[0] and re.search(r"然后|随后|接着|之后|再|then|afterwards", prefixes[1]):
+        if intervals[keys[1]][0][0] < intervals[keys[0]][0][1]:
+            raise ValueError("前后半段与指定的先后顺序相冲突。")
+    return intervals
+
+
 def _fallback(intent, original):
     keys, scope, operation = intent.keys, intent.scope, intent.operation
+    if intent.intervals is not None or (operation == "set" and intent.preserve_other):
+        try:
+            intervals = intent.intervals if intent.intervals is not None else _legacy_set_intervals(intent)
+            canonical, patch = compile_edits(edits_from_intervals(intervals), original)
+        except ValueError as error:
+            return _result("clarify", "区间编辑被拒绝：" + str(error), scope=scope)
+        return _result("ready", "规则回退（未调用语言模型）：按 16 FPS 精确编译半开时间区间；仅替换指定键的时间轨，其余键逐帧保留。只保证控制输入，不保证生成画面局部不变。",
+                       canonical, [LABELS[key] for key in keys], scope,
+                       _preserved(canonical, original, scope), edit_patch=patch)
     protected = MOVEMENT_KEYS if scope == "camera" else CAMERA_KEYS
     rows = [set(row) for row in original] if original is not None else [set() for _ in range(TOTAL_FRAMES)]
     if operation != "set":
@@ -249,31 +378,16 @@ def _fallback(intent, original):
     else:
         for row in rows:
             row.intersection_update(protected if scope != "all" else set())
-        late, early = bool(HALF_LATE.search(intent.text)), bool(HALF_EARLY.search(intent.text))
-        sequential = len(keys) > 1 and (bool(SEQUENCE.search(intent.text)) or late or early)
-        if len(keys) > 2:
-            return _result("clarify", "规则回退一次最多安排两个动作；请拆分指令。", scope=scope)
-        if len(keys) == 1 and late and early:
-            return _result("clarify", "同一个动作同时指定了前半段和后半段，请明确时段。", scope=scope)
-        if len(keys) == 2 and (late or early) and not (
-                (HALF_LATE.search(intent.text) and HALF_LATE.search(intent.text).start() > intent.actions[0][0])
-                or (early and late)):
-            return _result("clarify", "时间段对应的动作不明确，请使用“先前进，然后抬头”。", scope=scope)
-        for index, key in enumerate(keys):
-            start, stop = (0, TOTAL_FRAMES)
-            if sequential:
-                start, stop = ((0, 120) if index == 0 else (120, 240))
-                if index == 0 and CONTINUOUS.search(intent.text):
-                    start, stop = 0, TOTAL_FRAMES
-            elif late:
-                start = 120
-            elif early:
-                stop = 120
+        try:
+            intervals = _legacy_set_intervals(intent)
+        except ValueError as error:
+            return _result("clarify", str(error), scope=scope)
+        for key, ((start, stop),) in intervals.items():
             for row in rows[start:stop]:
                 row.add(key)
         detail = "按明确方向安排输入；先后动作各占 120 帧，未指定时段的单个动作占 240 帧。"
-        if sequential and CONTINUOUS.search(intent.text):
-            detail = "第一个动作覆盖 240 帧，第二个动作从第 121 帧开始。"
+        if CONTINUOUS.search(intent.text):
+            detail = "全程修饰的动作覆盖 240 帧；其他动作按各自的时段编排。"
     try:
         canonical = [_keys(tuple(row)) for row in rows]
     except ValueError:
@@ -286,10 +400,12 @@ def _fallback(intent, original):
 def _validate_proposal(proposal, intent, original):
     kind, scope = "external_proposal_validated", intent.scope
     try:
-        if not isinstance(proposal, dict) or not set(proposal).issubset(RESULT_FIELDS):
+        if not isinstance(proposal, dict) or not set(proposal).issubset(PROPOSAL_FIELDS):
             raise ValueError("unknown proposal fields")
-        if not {"action_segments", "edit_scope"}.issubset(proposal):
-            raise ValueError("proposal requires action_segments and edit_scope")
+        if "edit_scope" not in proposal or not ({"action_segments", "edits"} & set(proposal)):
+            raise ValueError("proposal requires edits or action_segments, and edit_scope")
+        if "edits" in proposal and proposal.get("action_segments") not in (None, []):
+            raise ValueError("proposal cannot supply both edits and executable action_segments")
         if proposal["edit_scope"] != scope:
             raise ValueError("proposal edit_scope differs from the requested scope")
         if proposal.get("status", "ready") not in ("ready", "clarify", "unsupported"):
@@ -304,17 +420,39 @@ def _validate_proposal(proposal, intent, original):
             raise ValueError("invalid preserved flag")
         status = proposal.get("status", "ready")
         if status != "ready":
-            if proposal["action_segments"] != []:
+            if proposal.get("action_segments", []) != [] or proposal.get("edits", []) != []:
                 raise ValueError("non-ready proposal must not contain executable actions")
             return _result(status, proposal.get("explanation", "外部提案需要进一步澄清。"), scope=scope, kind=kind)
-        rows = expand_segments(proposal["action_segments"])
+        patch = None
+        if "edits" in proposal:
+            rows, patch = compile_edits(proposal["edits"], original)
+            if {edit["key"] for edit in patch["edits"]} != set(intent.keys):
+                raise ValueError("patch keys differ from requested directions")
+        else:
+            rows = expand_segments(proposal["action_segments"])
         if intent.operation == "set":
             requested = set(intent.keys)
             protected = MOVEMENT_KEYS if scope == "camera" else CAMERA_KEYS if scope == "movement" else set()
+            if patch is not None or intent.intervals is not None or intent.preserve_other:
+                protected = set(KEYS) - requested
             retained = set().union(*(set(row) & protected for row in original)) if original else set()
             actual = set().union(*(set(row) for row in rows))
             if not requested.issubset(actual) or actual - requested - retained:
                 raise ValueError("proposal drops requested directions or introduces unrelated controls")
+            has_timing = (intent.intervals is not None or intent.preserve_other or SEQUENCE.search(intent.text)
+                          or HALF_EARLY.search(intent.text) or HALF_LATE.search(intent.text)
+                          or CONTINUOUS.search(intent.text))
+            if has_timing:
+                expected = _fallback(intent, original)
+                if expected["status"] != "ready":
+                    raise ValueError("requested time semantics need clarification")
+                expected_rows = expand_segments(expected["action_segments"])
+                if any(set(a) & requested != set(b) & requested for a, b in zip(rows, expected_rows)):
+                    raise ValueError("proposal does not match requested temporal order or intervals")
+                if intent.intervals is not None or intent.preserve_other:
+                    if rows != expected_rows:
+                        raise ValueError("interval edit changes an unrelated control track")
+                    patch = expected["edit_patch"]
         preserved = _preserved(rows, original, scope)
         if scope != "all" and not preserved:
             raise ValueError("proposal changes controls outside the requested edit_scope")
@@ -336,7 +474,7 @@ def _validate_proposal(proposal, intent, original):
             if any(set(a) - {key} != set(b) - {key} for a, b in zip(rows, original)):
                 raise ValueError("duration edit changes unrelated controls")
         return _result("ready", "外部提案已通过结构和编辑范围验证；这不验证生成画面或任务完成。",
-                       rows, goals, scope, preserved, kind)
+                       rows, goals, scope, preserved, kind, edit_patch=patch)
     except (ValueError, TypeError) as error:
         return _result("clarify", "外部提案被拒绝：" + str(error), scope=scope, kind=kind)
 
@@ -345,8 +483,10 @@ def plan_request(text: str, previous: dict | None = None, proposal: dict | None 
     """Plan 240 control frames or return a non-executable clarification.
 
     ``previous`` is a successful result or ``{'action_segments': [...]}``.
-    ``proposal`` requires ``action_segments`` and ``edit_scope``; optional fields
-    are the other result fields. Unknown fields and unknown controls are errors.
+    ``proposal`` requires ``edit_scope`` and either legacy ``action_segments``
+    or typed ``edits``. A replace_intervals edit rewrites only its key's track.
+    Seconds are exact 16-FPS frame boundaries; all other controls are preserved.
+    Optional ``edit_patch`` output metadata is recomputed, never trusted.
     Local edits recompute preservation per frame, never from a caller's flag.
     """
     original = None

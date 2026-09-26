@@ -28,6 +28,7 @@ import time
 
 KEYS = frozenset("WASDIJKL")
 PLAN_FIELDS = {"status", "explanation", "action_segments", "goals", "edit_scope"}
+PATCH_PLAN_FIELDS = (PLAN_FIELDS - {"action_segments"}) | {"edits"}
 INSPECT_FIELDS = {"verdict", "evidence", "decision", "revision_text", "confidence_note"}
 _PROGRESS = ContextVar("creator_model_progress", default=None)
 
@@ -136,10 +137,30 @@ Preserve every unrelated control. Return clarify if the exact requested duration
 exceeds the entire 240-frame timeline or is not a positive integer frame count;
 never silently clip or round an explicit half/half-more ratio. Ordinary shortening
 or lengthening without an explicit ratio may use the planner's floor default.
-The current downstream validator does NOT support numeric second/frame commands
-or arbitrary explicit time intervals: return clarify, explain this limitation,
-and request first/second half or shorten/lengthen/remove instead. Never silently
-drop or approximate a requested number or interval.
+For explicit seconds or time intervals, use the SPARSE EDIT schema INSTEAD of
+action_segments. Return ONLY status, explanation, goals, edit_scope, and edits:
+{"status":"ready","explanation":"只修改指定控制轨。","goals":["镜头在指定区间向上俯仰"],
+ "edit_scope":"camera","edits":[{"op":"replace_intervals","key":"I",
+ "intervals":[{"start_seconds":8,"end_seconds":10}]}]}.
+replace_intervals replaces the named key's ENTIRE track with these half-open
+intervals [start_seconds,end_seconds), clearing its old active intervals elsewhere.
+All other keys are copied unchanged from the selected previous plan by the compiler.
+Do NOT restate preserved keys in edits. For a new plan the starting track is empty.
+Each key occurs at most once; intervals must be ordered, non-overlapping, within
+0..15 seconds, and align exactly to 1/16 second. No rounding or silent clipping.
+Do not emit base_version_id or choose a different version: the application supplied
+the already selected previous_plan. Do not emit both edits and action_segments.
+Example: 保持前进不变，只在第8到10秒抬头 on a previous plan uses only key I,
+interval 8..10, edit_scope camera. Do not include W as an edit.
+Example: 前5秒前进，然后抬头3秒 on a NEW plan uses edit_scope all and
+edits=[{"op":"replace_intervals","key":"W","intervals":[{"start_seconds":0,"end_seconds":5}]},
+{"op":"replace_intervals","key":"I","intervals":[{"start_seconds":5,"end_seconds":8}]}].
+Example: 全程前进，8-10秒抬头 uses W 0..15 and I 8..10.
+Unsupported/ambiguous time expressions must return clarify, not an approximation.
+Non-ready plans contain empty edits or empty action_segments, never executable edits.
+For nonnumeric first/second-half and shorten/lengthen/remove requests, the legacy
+complete action_segments schema remains supported. Respect the stated sequence:
+先前进，然后抬头 must NEVER become first I then W.
 Example: "一直前进，后半段抬头" on a new plan means edit_scope all and segments
 [{"frames":120,"keys":["W"]},{"frames":120,"keys":["W","I"]}].
 Then "保留前进，只缩短抬头" means edit_scope camera and segments
@@ -272,14 +293,27 @@ def _read_json(text):
 
 
 def validate_plan(result):
-    _require(isinstance(result, dict) and set(result) == PLAN_FIELDS, "invalid model plan fields")
+    _require(isinstance(result, dict) and set(result) in (PLAN_FIELDS, PATCH_PLAN_FIELDS), "invalid model plan fields")
     _require(result["status"] in ("ready", "clarify", "unsupported"), "invalid plan status")
     _require(isinstance(result["explanation"], str) and result["explanation"].strip()
              and len(result["explanation"]) <= 2000, "plan explanation must contain 1..2000 characters")
     _require(result["edit_scope"] in ("all", "camera", "movement"), "invalid edit scope")
-    goals, segments = result["goals"], result["action_segments"]
+    goals = result["goals"]
     _require(isinstance(goals, list) and len(goals) <= 16
              and all(isinstance(goal, str) and goal.strip() and len(goal) <= 200 for goal in goals), "invalid plan goals")
+    if "edits" in result:
+        edits = result["edits"]
+        _require(isinstance(edits, list), "edits must be a list")
+        if result["status"] != "ready":
+            _require(not edits, "non-ready plans must not contain executable edits")
+        else:
+            _require(goals, "ready plan needs goals")
+            from training.creator.timeline_patch import compile_edits
+            # Structural check only: original-plan conflicts, protected tracks,
+            # and correspondence to the user's words are checked downstream.
+            compile_edits(edits)
+        return result
+    segments = result["action_segments"]
     _require(isinstance(segments, list), "action_segments must be a list")
     if result["status"] != "ready":
         _require(not segments, "non-ready plans must not contain executable actions")
@@ -496,13 +530,17 @@ def execute_request(model_path, request, runtime_root):
         capabilities = request.get("capabilities")
         _require(isinstance(capabilities, dict), "planning capabilities must be an object")
         from training.creator.planner import plan_request
-        requested_scope = plan_request(text, previous)["edit_scope"]
+        intent_contract = plan_request(text, previous)
+        requested_scope = intent_contract["edit_scope"]
         scope_instruction = (
             f'\nFor THIS request, edit_scope MUST be "{requested_scope}" as determined by the CPU planner. '
             'A request to keep/preserve forward movement (保留前进) is preservation, NOT a movement edit. '
             'Do not choose all merely because preserved movement keys remain in the complete timeline. '
             'Output the requested scope exactly; downstream validation will reject a different scope.\n'
         )
+        if intent_contract.get("edit_patch"):
+            scope_instruction += ('For THIS request use edits with replace_intervals; '
+                                  'do not return action_segments. Extract time intervals from the user text.\n')
         content = json.dumps({"text": text, "previous_plan": previous, "capabilities": capabilities,
                               "requested_edit_scope": requested_scope}, ensure_ascii=False)
         proposal = _generate(model_path, PLAN_PROMPT + scope_instruction, content)

@@ -19,6 +19,10 @@ CAPABILITIES = {
     "future_frames": 240,
     "movement": {"W": "forward", "A": "left", "S": "backward", "D": "right"},
     "camera": {"I": "look up", "J": "look left", "K": "look down", "L": "look right"},
+    "timeline_edit": {"op": "replace_intervals", "time_unit": "seconds", "interval": "half_open",
+                      "frame_period_seconds": 0.0625, "duration_seconds": 15,
+                      "preservation": "all unedited control keys at every frame",
+                      "base_version": "previous_plan is chosen by the user/application, never by the model"},
     "unsupported": ["jump", "interact", "attack", "change scene or character", "guaranteed object interaction"],
     "limits": "A proposed action input is not evidence that the generated video will realize it.",
 }

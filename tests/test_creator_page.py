@@ -23,8 +23,17 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   const payload = JSON.parse(input);
+  const nodes = new Map(), storage = new Map();
+  const node = () => ({value:'', textContent:'', dataset:{}, childNodes:[],
+    append(...children) { this.childNodes.push(...children); },
+    replaceChildren(...children) { this.childNodes = [...children]; },
+    setAttribute() {}, focus() {}, scrollIntoView() {},
+    querySelector() { return node(); }, querySelectorAll() { return []; },
+  });
   const context = vm.createContext({
-    document: {getElementById: () => ({}), addEventListener: () => {}},
+    document: {getElementById: id => {if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id);},
+      createElement: () => node(), addEventListener: () => {}},
+    localStorage: {getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value)},
     fetch: () => new Promise(() => {}),
   });
   vm.runInContext(payload.source, context, {timeout: 1000});
@@ -97,13 +106,86 @@ def test_review_records_keep_human_and_model_separate_without_duplicates():
     assert all('previous_assessment' not in item for item in records)
 
 
-def test_review_edit_warns_when_viewed_version_is_not_last_ready_baseline():
-    versions = [dict(version_id='old', plan=plan((240, ['W']))),
-                dict(version_id='ready', plan=plan((240, ['W', 'I']))),
-                dict(version_id='clarify', plan=dict(status='clarify'))]
+def version_records():
+    return [dict(version_id='old', plan=plan((240, ['W']))),
+            dict(version_id='ready', plan=plan((240, ['W', 'I']))),
+            dict(version_id='clarify', plan=dict(status='clarify'))]
+
+
+def test_edit_baseline_defaults_dynamic_but_fixed_selection_survives_refresh():
     result = browser_helper(
-        'selectedId="test"; sessions=[{session_id:"test",versions:' + json.dumps(versions) + '}];'
-        '[reviewEditWarning("old"), reviewEditWarning("ready")]'
+        'selectedId="test"; sessions=[{session_id:"test",versions:' + json.dumps(version_records()) + '}];'
+        'const observed=[editBaseVersion().version_id];'
+        'setEditBase("old"); sessions[0].versions.push({version_id:"new",plan:{status:"ready"}});'
+        'observed.push(editBaseVersion().version_id); editBases.clear();'
+        'observed.push(editBaseVersion().version_id); setEditBase("");'
+        'observed.push(editBaseVersion().version_id); observed'
     )
-    assert '版本 2' in result[0]
-    assert result[1] == ''
+    assert result == ['ready', 'old', 'old', 'new']
+
+
+def test_baseline_select_only_ready_versions_and_does_not_leak_between_sessions():
+    result = browser_helper(
+        'selectedId="test"; sessions=[{session_id:"test",versions:' + json.dumps(version_records()) + '},'
+        '{session_id:"other",versions:[{version_id:"other-ready",plan:{status:"ready"}}]}];'
+        'setEditBase("old");renderEditBase();'
+        'const observed=[$("edit-base-version").childNodes.map(option=>option.value),'
+        'setEditBase("clarify"),setEditBase("other-ready"),editBaseVersion().version_id];'
+        'selectedId="other";observed.push(editBaseVersion().version_id,editBaseSelection());'
+        'selectedId="";observed.push(editBaseVersion());'
+        'selectedId="test";observed.push(editBaseVersion().version_id);observed'
+    )
+    assert result == [['', 'old', 'ready'], False, False, 'old', 'other-ready', '', None, 'old']
+
+
+def test_plan_payload_pins_displayed_baseline_and_does_not_infer_id_from_text():
+    result = browser_helper(
+        'selectedId="test"; sessions=[{session_id:"test",versions:' + json.dumps(version_records()) + '}];'
+        'config={rule_planner_available:true};$("scene").value="mountain";$("seed").value="42";'
+        '$("planner-mode").value="local_model";$("instruction").value="基于版本B，保持前进不变，只在第8到10秒抬头";'
+        'const dynamic=planPayload();setEditBase("old");[dynamic,planPayload()]'
+    )
+    assert [item['base_version_id'] for item in result] == ['ready', 'old']
+    assert all(item['planner'] == 'local_model' and item['seed'] == 42 for item in result)
+    assert all('版本B' in item['text'] for item in result)
+
+
+def test_review_edit_selects_its_own_baseline_without_model_or_generation_call():
+    result = browser_helper(
+        'selectedId="test"; sessions=[{session_id:"test",versions:' + json.dumps(version_records()) + '}];'
+        'config={};updateControls=()=>{};let calls=0;api=()=>{calls++;};'
+        'useReviewEdit("old","保持前进不变，只在第8到10秒抬头");'
+        '[editBaseVersion().version_id,$("edit-base-version").value,$("instruction").value,calls,$("notice").textContent]'
+    )
+    assert result[:4] == ['old', 'old', '保持前进不变，只在第8到10秒抬头', 0]
+    assert '固定为此历史版本' in result[4]
+
+
+def test_comparison_and_acceptance_do_not_change_edit_baseline():
+    result = browser_helper(
+        'selectedId="test"; sessions=[{session_id:"test",accepted_version:"ready",versions:' + json.dumps(version_records()) + '}];'
+        'setEditBase("old");renderVersions=()=>{};chooseComparison("left","ready");'
+        'chooseComparison("right","clarify");[editBaseVersion().version_id,comparison().left,comparison().right]'
+    )
+    assert result == ['old', 'ready', 'clarify']
+
+
+def test_planned_version_response_controls_preview_and_survives_polling():
+    records = version_records()
+    records[0]['base_version_id'] = 'actual-parent'
+    records[0]['plan']['edit_patch'] = dict(schema_version=1, fps=16, total_frames=240,
+        edits=[dict(op='replace_intervals', key='I', intervals=[dict(start_seconds=8, end_seconds=10)])],
+        protected_keys=['W'])
+    saved = dict(session_id='test', planned_version_id='old', versions=records)
+    result = browser_helper(
+        'config={};upsertSession(' + json.dumps(saved) + ');renderPlan();'
+        'const walk=node=>[node.textContent,...node.childNodes.flatMap(walk)];'
+        'const observed=[plannedVersion().version_id,walk($("plan-details")).join(" ")];'
+        'sessions[0].versions.push({version_id:"later",plan:{status:"ready"}});'
+        'observed.push(plannedVersion().version_id);plannedVersions.clear();'
+        'observed.push(plannedVersion().version_id);observed'
+    )
+    assert result[0] == result[2] == result[3] == 'old'
+    assert 'actual-parent' in result[1]
+    assert 'replace_intervals' in result[1]
+    assert 'start_seconds' in result[1]

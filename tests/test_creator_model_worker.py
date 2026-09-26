@@ -50,6 +50,43 @@ def test_downstream_still_rejects_proposal_that_drops_protected_movement():
     assert result['status'] == 'clarify' and previous == original
 
 
+def _patch(start=8, end=10):
+    return dict(status='ready', explanation='将抬头输入限定在第8到10秒。',
+                edit_scope='camera', goals=['镜头在指定时段向上俯仰'],
+                edits=[dict(op='replace_intervals', key='I',
+                            intervals=[dict(start_seconds=start, end_seconds=end)])])
+
+
+def test_sparse_model_patch_is_compiled_without_rewriting_protected_tracks():
+    previous = plan_request('一直前进，后半段抬头')
+    proposal = _patch()
+    assert validate_plan(proposal) is proposal
+    result = plan_request('保持前进不变，只在第8到10秒抬头', previous, proposal)
+    assert result['status'] == 'ready' and result['preserved'] is True
+    rows = expand_segments(result['action_segments'])
+    assert all('W' in row for row in rows)
+    assert [i for i, row in enumerate(rows) if 'I' in row] == list(range(128, 160))
+
+
+@pytest.mark.parametrize('start,end', [(8, 16), (8, 8), (0.1, 10), (True, 10), ('NaN', 10)])
+def test_sparse_worker_rejects_invalid_exact_times(start, end):
+    with pytest.raises(ValueError):
+        validate_plan(_patch(start, end))
+
+
+def test_sparse_worker_does_not_allow_both_output_representations():
+    proposal = _patch()
+    proposal['action_segments'] = []
+    with pytest.raises(ValueError):
+        validate_plan(proposal)
+
+
+def test_valid_patch_structure_is_not_evidence_of_user_intent_match():
+    previous = plan_request('一直前进，后半段抬头')
+    proposal = validate_plan(_patch(7, 9))
+    assert plan_request('保持前进不变，只在第8到10秒抬头', previous, proposal)['status'] == 'clarify'
+
+
 @pytest.mark.parametrize('template,expected', [
     ('{{ messages }}', {}),
     ('{% if enable_thinking %}<think>{% endif %}', {'enable_thinking': False}),

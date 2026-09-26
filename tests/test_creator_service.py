@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from training.creator.planner import plan_request
+from training.creator.planner import plan_request, expand_segments, MOVEMENT_KEYS
 from training.creator.service import CreatorService
 from training.demo.service import QueueFullError
 
@@ -291,6 +291,129 @@ def test_local_edit_keeps_a_ready_plan_with_provider_provenance(service):
     assert service.demo.submitted == []
 
 
+def test_explicit_history_base_branches_from_ready_draft_and_preserves_its_controls(service):
+    first = make_plan(service)
+    base = first['versions'][0]
+    second = make_plan(service, session_id=first['session_id'], request_id='base-second-edit',
+                       text='保持镜头，向右移动')
+    latest = second['versions'][-1]
+    assert latest['plan']['status'] == 'ready'
+    branch = make_plan(service, session_id=first['session_id'], request_id='base-history-edit',
+                       base_version_id=base['version_id'], text='保留前进，取消抬头')
+    result = branch['versions'][-1]
+    assert base['job_id'] is None  # A valid ungenerated draft is a valid baseline.
+    assert result['parent_version'] == result['base_version_id'] == base['version_id']
+    assert result['requested_base_version_id'] == base['version_id']
+    assert branch['planned_version_id'] == result['version_id']
+    assert service.provider.plans[-1][1] == base['plan']
+    before = expand_segments(base['plan']['action_segments'])
+    after = expand_segments(result['plan']['action_segments'])
+    other = expand_segments(latest['plan']['action_segments'])
+    assert all(set(a) & MOVEMENT_KEYS == set(b) & MOVEMENT_KEYS for a, b in zip(before, after))
+    assert any(set(a) & MOVEMENT_KEYS != set(b) & MOVEMENT_KEYS for a, b in zip(other, after))
+    assert all('I' not in row for row in after)
+    assert service.demo.submitted == []
+    reloaded = CreatorService(service.demo, provider=service.provider)
+    stored = reloaded._version(reloaded._session(first['session_id']), result['version_id'])
+    assert stored['base_version_id'] == base['version_id']
+
+
+def test_implicit_base_is_latest_ready_not_accepted_or_latest_unready_version(service):
+    original = complete(service, make_plan(service))
+    service.accept(target(original))
+    edited = make_plan(service, session_id=original['session_id'], request_id='base-latest-ready',
+                       text='缩短抬头')
+    ready = edited['versions'][-1]
+    make_plan(service, session_id=original['session_id'], request_id='base-unready-plan', text='打开门')
+    result = make_plan(service, session_id=original['session_id'], request_id='base-default-edit', text='取消抬头')
+    assert result['accepted_version'] == original['versions'][0]['version_id']
+    assert result['versions'][-1]['base_version_id'] == ready['version_id']
+    assert result['versions'][-1]['requested_base_version_id'] is None
+    assert service.provider.plans[-1][1] == ready['plan']
+
+
+@pytest.mark.parametrize('invalid', [None, '', ' ', 3, [], {}])
+def test_explicit_base_requires_nonempty_string_without_state_change(service, invalid):
+    with pytest.raises(ValueError, match='nonempty version ID'):
+        make_plan(service, base_version_id=invalid)
+    assert not service.sessions and not service.provider.plans
+
+
+def test_explicit_base_requires_session_and_rejects_cross_session_unknown_and_unready(service):
+    first = make_plan(service)
+    other = make_plan(service, request_id='base-other-session')
+    unready = make_plan(service, session_id=first['session_id'], request_id='base-unready-target', text='打开门')
+    before = deepcopy(service.sessions)
+    calls = len(service.provider.plans)
+    with pytest.raises(ValueError, match='requires session_id'):
+        make_plan(service, request_id='base-no-session', base_version_id=first['versions'][0]['version_id'])
+    for invalid in ('does-not-exist', other['versions'][0]['version_id']):
+        with pytest.raises(ValueError, match='unknown plan version'):
+            make_plan(service, session_id=first['session_id'], request_id='base-invalid-target',
+                      base_version_id=invalid, text='缩短抬头')
+    with pytest.raises(ValueError, match='ready plan'):
+        make_plan(service, session_id=first['session_id'], request_id='base-nonready-target',
+                  base_version_id=unready['versions'][-1]['version_id'], text='缩短抬头')
+    assert service.sessions == before
+    assert len(service.provider.plans) == calls and not service.operations
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_plan_request_replay_freezes_original_base_after_newer_edits_and_reload(service, explicit):
+    first = make_plan(service)
+    base_id = first['versions'][0]['version_id']
+    request = dict(session_id=first['session_id'], request_id='base-stable-replay', text='缩短抬头')
+    if explicit:
+        request['base_version_id'] = base_id
+    planned = make_plan(service, **request)
+    planned_id = planned['planned_version_id']
+    newer = make_plan(service, session_id=first['session_id'], request_id='base-newer-version', text='取消抬头')
+    new_id = newer['planned_version_id']
+    calls = len(service.provider.plans)
+    reloaded = CreatorService(service.demo, provider=service.provider)
+    replay = make_plan(reloaded, **request)
+    assert replay['planned_version_id'] == planned_id
+    assert replay['versions'] == newer['versions']
+    assert next(v for v in replay['versions'] if v['version_id'] == planned_id)['base_version_id'] == base_id
+    with pytest.raises(ValueError, match='different base_version_id'):
+        make_plan(reloaded, **{**request, 'base_version_id': new_id})
+    assert len(service.provider.plans) == calls and not reloaded.operations
+
+
+def test_plan_replay_rejects_explicit_to_implicit_selection_change(service):
+    first = make_plan(service)
+    request = dict(session_id=first['session_id'], request_id='base-explicit-bound', text='缩短抬头')
+    make_plan(service, **request, base_version_id=first['planned_version_id'])
+    with pytest.raises(ValueError, match='different base_version_id'):
+        make_plan(service, **request)
+
+
+def test_explicit_history_base_still_rejects_concurrent_head_change(service):
+    first = make_plan(service)
+    entered, release = threading.Event(), threading.Event()
+    original = service.provider.plan
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5), 'unit test failed to release model stub'
+        return original(*args, **kwargs)
+
+    service.provider.plan = blocked
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(make_plan, service, session_id=first['session_id'],
+            request_id='base-concurrent-model', base_version_id=first['planned_version_id'], text='缩短抬头')
+        try:
+            assert entered.wait(timeout=5)
+            latest = make_plan(service, session_id=first['session_id'], request_id='base-concurrent-rule',
+                               text='取消抬头', planner='rule_fallback')
+        finally:
+            release.set()
+        with pytest.raises(ValueError, match='plan changed while model was working'):
+            future.result(timeout=5)
+    assert service.list_sessions()[0]['versions'] == latest['versions']
+    assert not service.operations
+
+
 def test_generate_is_idempotent_and_uses_frozen_scene_seed_actions(service):
     first = make_plan(service)
     generated = service.generate({**target(first), 'request_id': 'unit-generate-001'})
@@ -336,7 +459,9 @@ def test_inspection_reads_raw_video_and_cites_temporal_model_evidence(service):
 
 
 def test_visual_feedback_creates_at_most_one_revision_without_generating(service):
-    original = complete(service, make_plan(service))
+    # No user-specified order or duration: a shorter camera input can still
+    # satisfy this direction-only request. An explicit timed plan cannot.
+    original = complete(service, make_plan(service, text='前进，抬头'))
     reviewed = service.inspect(target(original))
     revised = service.revise({**target(reviewed), 'request_id': 'unit-revise-001'})
     new = revised['versions'][-1]
@@ -362,6 +487,17 @@ def test_visual_feedback_creates_at_most_one_revision_without_generating(service
     else:
         assert len(result['versions']) == 2
     assert len(service.provider.plans) == before
+
+
+def test_visual_feedback_cannot_shorten_a_user_specified_temporal_schedule(service):
+    original = complete(service, make_plan(service, text='先前进，然后抬头'))
+    reviewed = service.inspect(target(original))
+    before = deepcopy(service.sessions)
+    with pytest.raises(ValueError, match='contradicts the original user instruction'):
+        service.revise({**target(reviewed), 'request_id': 'reject-time-revision'})
+    assert service.sessions == before
+    assert len(service.demo.submitted) == 1
+    assert not service.operations
 
 
 def test_human_review_preserves_model_evidence_and_blocks_automatic_overwrite(service):
@@ -457,7 +593,10 @@ def test_visual_revision_cannot_undo_the_users_shortening_request(service):
 
 def prepare_model_operation(service, operation):
     """Use only CPU test doubles; prepare a real service operation, not GPU work."""
-    session = complete(service, make_plan(service))
+    # The revision stub shortens I. Permit it only for a direction-only user
+    # request, not the fixed half-and-half schedule used by other tests.
+    session = complete(service, make_plan(service, text='前进，抬头') if operation == 'revise'
+                       else make_plan(service))
     if operation == 'plan':
         return lambda: make_plan(service, request_id='serial-model-plan-002')
     if operation == 'inspect':

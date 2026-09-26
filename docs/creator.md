@@ -22,7 +22,7 @@ Creator 是独立的自然语言创作页面，沿用已有的异步视频队列
 
 同一会话内场景、提示词、首图和 seed 固定。新版本从同一首图重新生成，不是中途改写已有视频；这不是实时游戏。方向键对应模型的 `I/J/K/L`，移动对应 `W/A/S/D`；空按键表示保持。计划覆盖 240 个未来动作帧，16 fps，约 15 秒。
 
-历史对比选择只改变查看对象，不改变编辑起点。新描述仍基于当前会话最后一条 `ready` 计划，页面会标出该版本；不是基于左/右对比选择，也不是自动基于已接受版本。输入差异按240帧展开计算，能证明哪些控制输入不同，不能证明视频里的动作差异。播放对齐是浏览器级对照，不是逐帧同步测量。
+历史对比选择只改变查看对象，不改变编辑起点。独立“编辑基线”选择器支持从指定 `ready` 历史计划继续修改；默认动态跟随最新可执行计划，提交时绑定页面显示的实际基线，不自动跟随已接受版本。历史卡的“基于此版修改”会明确选择该基线。新增精确秒数与受保护的逐键 Patch，见[时间线编辑说明](creator-timeline-edit.md)。输入差异按240帧展开计算，能证明哪些控制输入不同，不能证明视频里的动作差异。播放对齐是浏览器级对照，不是逐帧同步测量。
 
 ## 启动与配置
 
@@ -95,7 +95,7 @@ python scripts/creator_delivery.py --url http://127.0.0.1:8881 \
 
 | POST 路径 | 主要字段 | 作用 |
 | --- | --- | --- |
-| `/api/plan` | `scene_id, seed, text, request_id`，可加 `session_id` | 新建会话或计划版本；不会自动生成 |
+| `/api/plan` | `scene_id, seed, text, request_id`，可加 `session_id, base_version_id` | 新建会话或指定历史基线的计划；返回 `planned_version_id`，不会自动生成 |
 | `/api/generate` | `session_id, version_id, request_id` | 显式入队；同一版本重复请求不重复生成 |
 | `/api/retry` | `session_id, version_id, request_id` | 失败版本用同一计划创建新版本和新任务；不再调用编排模型 |
 | `/api/review` | `session_id, version_id, verdict, evidence` | 保存人工结论和非空文字依据 |

@@ -87,11 +87,13 @@ const fixture = {session_id:'manual-test', scene_id:'test-scene', seed:42, versi
     await card.locator('[data-action="use-review-edit"]').click();
     assert.equal(await page.locator('#instruction').inputValue(),instruction);
     assert.equal(posts.length,count);
-    assert.match(await page.locator('#notice').innerText(),/尚未编排，也未提交生成/);
+    assert.match(await page.locator('#notice').innerText(),/尚未调用模型、编排或提交生成/);
+    assert.equal(await page.locator('#edit-base-version').inputValue(),'edited');
     const original=page.locator('[data-version-id="original"]');
     await original.locator('.review-edit').fill('保留前进，取消抬头');
     await original.locator('[data-action="use-review-edit"]').click();
-    assert.match(await page.locator('#notice').innerText(),/编排会基于版本 2/);
+    assert.match(await page.locator('#notice').innerText(),/固定为此历史版本/);
+    assert.equal(await page.locator('#edit-base-version').inputValue(),'original');
     assert.equal(posts.length,count);
     await page.locator('#planner-mode').selectOption('rule_fallback');
     assert.equal(posts.length,count);
@@ -99,6 +101,7 @@ const fixture = {session_id:'manual-test', scene_id:'test-scene', seed:42, versi
     await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('TEST ONLY — no model task launched'));
     assert.equal(posts.at(-1).pathname,'/api/plan');
     assert.equal(posts.at(-1).body.planner,'rule_fallback');
+    assert.equal(posts.at(-1).body.base_version_id,'original');
     plannerKind='rule_fallback';
     await page.reload();
     await page.waitForFunction(()=>document.querySelectorAll('.version:not([hidden])').length===2);
@@ -113,7 +116,7 @@ const fixture = {session_id:'manual-test', scene_id:'test-scene', seed:42, versi
     console.log(JSON.stringify({test_only:true,passed:true,checks:[
       'separate human/model source panels and history','criteria initially unset','failed save preserves draft',
       'reload preserves draft','review success keeps old model observation','edit-fill never POSTs',
-      'historical edit warns last-ready baseline','explicit rule planner request; no implicit generation',
+      'historical edit pins that version as baseline','explicit rule planner request; no implicit generation',
       'model deployment defaults local model; CPU-only deployment defaults rule and disables model'],posts:posts.map(p=>p.pathname),errors}));
   } finally {await browser.close()}
 })().catch(error=>{console.error(error);process.exitCode=1});

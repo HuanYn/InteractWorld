@@ -100,7 +100,13 @@ class CreatorService:
 
     def plan(self, payload):
         require(isinstance(payload, dict), 'request must be an object')
-        require(set(payload) <= {'session_id', 'scene_id', 'seed', 'text', 'request_id', 'planner'}, 'unexpected plan fields')
+        require(set(payload) <= {'session_id', 'scene_id', 'seed', 'text', 'request_id', 'planner',
+                                'base_version_id'}, 'unexpected plan fields')
+        requested_base = payload.get('base_version_id')
+        if 'base_version_id' in payload:
+            require(isinstance(requested_base, str) and requested_base.strip(),
+                    'base_version_id must be a nonempty version ID')
+            require(payload.get('session_id'), 'base_version_id requires session_id')
         planner = payload.get('planner', 'local_model' if self.provider else 'rule_fallback')
         require(planner in ('local_model', 'rule_fallback'), 'unknown planner mode')
         require(planner != 'local_model' or self.provider is not None, 'local model is not configured; explicitly choose rule_fallback')
@@ -113,11 +119,20 @@ class CreatorService:
             for existing in self.sessions.values():
                 for version in existing['versions']:
                     if version.get('request_id') == rid:
+                        require(version.get('origin', 'user') == 'user',
+                                'request_id reused for a different operation')
                         previous_mode = version.get('planner_kind', 'rule_fallback' if version.get('provider') == 'rule_fallback' else 'local_model')
                         require(previous_mode == planner, 'request_id reused with different planner mode')
                         require(version['text'] == text and (not payload.get('session_id') or payload['session_id'] == existing['session_id']), 'request_id reused with different input')
                         require(payload.get('scene_id', existing['scene_id']) == existing['scene_id'] and payload.get('seed', existing['seed']) == existing['seed'], 'request_id condition mismatch')
-                        return self.snapshot(existing)
+                        # Bind retries to the original selection, not today's
+                        # latest ready plan. Records predating explicit bases
+                        # were necessarily implicit and retain that behavior.
+                        require(requested_base == version.get('requested_base_version_id'),
+                                'request_id reused with different base_version_id')
+                        result = self.snapshot(existing)
+                        result['planned_version_id'] = version['version_id']
+                        return result
             require(rid not in self.operations, 'this request is already being planned')
             if payload.get('session_id'):
                 session = self._session(payload['session_id'])
@@ -130,8 +145,14 @@ class CreatorService:
                                created_at=time.time(), accepted_version=None, versions=[])
                 self.sessions[session['session_id']] = session
                 self._save(session)
-            previous_version = next((v for v in reversed(session['versions']) if v['plan']['status'] == 'ready'), None)
+            if requested_base is not None:
+                previous_version = self._version(session, requested_base)
+                require(previous_version['plan']['status'] == 'ready',
+                        'base_version_id must reference a ready plan')
+            else:
+                previous_version = next((v for v in reversed(session['versions']) if v['plan']['status'] == 'ready'), None)
             previous = copy.deepcopy(previous_version['plan']) if previous_version else None
+            actual_base = previous_version['version_id'] if previous_version else None
             head = session['versions'][-1]['version_id'] if session['versions'] else None
             self.operations[rid] = session['session_id']
         try:
@@ -143,13 +164,16 @@ class CreatorService:
             with self.lock:
                 require((session['versions'][-1]['version_id'] if session['versions'] else None) == head, 'plan changed while model was working; submit your edit again')
                 vid = uuid.uuid4().hex
-                session['versions'].append(dict(version_id=vid, parent_version=previous_version['version_id'] if previous_version else None,
+                session['versions'].append(dict(version_id=vid, parent_version=actual_base,
+                    base_version_id=actual_base, requested_base_version_id=requested_base,
                     text=text, plan=plan, job_id=None, review=None, created_at=time.time(), request_id=rid,
                     root_request=vid, automatic_revisions=0, origin='user',
                     planner_kind=planner,
                     provider=getattr(provider, 'name', 'local_model_command') if provider else 'rule_fallback'))
                 self._save(session)
-                return self.snapshot(session)
+                result = self.snapshot(session)
+                result['planned_version_id'] = vid
+                return result
         finally:
             with self.lock:
                 self.operations.pop(rid, None)

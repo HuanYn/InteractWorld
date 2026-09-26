@@ -80,7 +80,9 @@ class Delivery:
                            started_at=utc_now(), status='running', max_seconds=args.max_seconds,
                            poll_interval_seconds=30, automatic_revision=False,
                            visual_quality_verified=False, session_id=args.session_id,
-                           version_id=args.version_id, job_id=None, requests=[], polls=[])
+                           version_id=args.version_id,
+                           requested_base_version_id=args.base_version_id,
+                           base_version_id=None, job_id=None, requests=[], polls=[])
         # Reserve a new evidence path before any request; never overwrite a prior run.
         with self.output.open('x', encoding='utf-8') as stream:
             json.dump(self.report, stream, ensure_ascii=False, indent=2, allow_nan=False)
@@ -252,15 +254,28 @@ class Delivery:
             before = self.session(self.args.session_id)
             self.report['session_before'] = before
             payload = dict(session_id=before['session_id'], scene_id=before['scene_id'], seed=before['seed'], text=text)
+            if self.args.base_version_id is not None:
+                base = self.version(before, self.args.base_version_id)
+                if base.get('plan', {}).get('status') != 'ready':
+                    raise ValueError('--base-version-id must identify a ready plan in this session')
+                payload['base_version_id'] = self.args.base_version_id
         payload['request_id'] = uuid.uuid4().hex
         planned = self.api('/api/plan', payload)
+        self.report['plan_response'] = planned
         matches = [v for v in planned.get('versions', []) if v.get('request_id') == payload['request_id']]
         if len(matches) != 1:
             self.report['plan_response'] = planned
             raise ValueError('plan response did not identify exactly one version for this new request')
         version = matches[0]
+        if planned.get('planned_version_id', version['version_id']) != version['version_id']:
+            raise ValueError('planned_version_id does not match this request_id')
+        actual_base = version.get('base_version_id', version.get('parent_version'))
+        self.report['base_version_id'] = actual_base
+        if self.args.base_version_id is not None and actual_base != self.args.base_version_id:
+            self.report['plan_response'] = planned
+            raise ValueError('plan response did not preserve the explicitly selected base version')
         self.report.update(session_id=planned['session_id'], version_id=version['version_id'],
-                           plan_response=planned, session=planned)
+                           base_version_id=actual_base, plan_response=planned, session=planned)
         self.save()
         if version.get('plan', {}).get('status') != 'ready':
             self.finish('plan_not_ready', explanation=version.get('plan', {}).get('explanation'))
@@ -308,11 +323,17 @@ def main(argv=None):
     parser.add_argument('--case', required=True, choices=('initial', 'edit', 'inspect', 'retry'))
     parser.add_argument('--session-id')
     parser.add_argument('--version-id')
+    parser.add_argument('--base-version-id', help='ready history version used as the edit baseline; edit only')
     parser.add_argument('--text', help='override initial/edit instruction, 1..2000 characters')
     parser.add_argument('--max-seconds', type=bounded_seconds, default=1800, help='total client deadline, 1..3600 (default 1800)')
     args = parser.parse_args(argv)
     if args.case in ('edit', 'inspect', 'retry') and not args.session_id:
         parser.error('--session-id is required for edit/inspect/retry')
+    if args.base_version_id is not None:
+        if args.case != 'edit':
+            parser.error('--base-version-id is only used for edit')
+        if not args.base_version_id.strip():
+            parser.error('--base-version-id must be a nonempty version ID')
     if args.case in ('inspect', 'retry') and not args.version_id:
         parser.error('--version-id is required for inspect/retry')
     if args.case == 'initial' and args.session_id:
