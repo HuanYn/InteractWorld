@@ -24,7 +24,7 @@ const fixture = {session_id:'manual-test', scene_id:'test-scene', seed:42, versi
     ...(process.env.CREATOR_BROWSER_EXECUTABLE?{executablePath:process.env.CREATOR_BROWSER_EXECUTABLE}:{})});
   try {
     const page = await browser.newPage(), posts = [], errors = [];
-    let reviewAttempts = 0;
+    let reviewAttempts = 0, plannerKind = 'external_proposal_validated';
     page.on('pageerror', error=>errors.push(error.message));
     await page.addInitScript(()=>localStorage.setItem('interactworld.creator.session','manual-test'));
     await page.route('**/*', async route=>{
@@ -45,7 +45,7 @@ const fixture = {session_id:'manual-test', scene_id:'test-scene', seed:42, versi
       const assets={'/':['text/html',source.HTML],'/style.css':['text/css',source.CSS],'/app.js':['text/javascript',source.JS]};
       if(assets[pathname])return route.fulfill({contentType:assets[pathname][0],body:assets[pathname][1]});
       if(pathname==='/api/config')return route.fulfill({json:{csrf_token:'test-token',generation_enabled:false,
-        rule_planner_available:true,planner_kind:'external_proposal_validated',observer_kind:'local_qwen',
+        rule_planner_available:true,planner_kind:plannerKind,observer_kind:'local_qwen',
         visual_revision_enabled:false,scenes:[{scene_id:'test-scene',prompt:'CPU UI TEST ONLY',initial_url:'/initial.svg'}]}});
       if(pathname==='/api/sessions')return route.fulfill({json:{sessions:[fixture]}});
       if(pathname==='/api/jobs')return route.fulfill({json:{jobs:versions.map(v=>({job_id:v.job_id,status:v.job_status}))}});
@@ -54,6 +54,8 @@ const fixture = {session_id:'manual-test', scene_id:'test-scene', seed:42, versi
     });
     await page.goto('http://127.0.0.1:9860/');
     await page.waitForFunction(()=>document.querySelectorAll('.version:not([hidden])').length===2);
+    assert.equal(await page.locator('#planner-mode').inputValue(),'local_model');
+    assert.equal(await page.locator('#planner-mode option[value="local_model"]').isDisabled(),false);
     const card=page.locator('[data-version-id="edited"]');
     assert.match(await card.locator('.human-review-panel').innerText(),/OLDER HUMAN TEST OBSERVATION/);
     assert.match(await card.locator('.model-review-panel').innerText(),/MODEL TEST OBSERVATION/);
@@ -97,11 +99,21 @@ const fixture = {session_id:'manual-test', scene_id:'test-scene', seed:42, versi
     await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('TEST ONLY — no model task launched'));
     assert.equal(posts.at(-1).pathname,'/api/plan');
     assert.equal(posts.at(-1).body.planner,'rule_fallback');
+    plannerKind='rule_fallback';
+    await page.reload();
+    await page.waitForFunction(()=>document.querySelectorAll('.version:not([hidden])').length===2);
+    assert.equal(await page.locator('#planner-mode').inputValue(),'rule_fallback');
+    assert.equal(await page.locator('#planner-mode option[value="local_model"]').isDisabled(),true);
+    await page.locator('#instruction').fill('一直前进');
+    await page.locator('#plan').click();
+    await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('TEST ONLY — no model task launched'));
+    assert.equal(posts.at(-1).body.planner,'rule_fallback');
     assert.equal(posts.some(item=>item.pathname==='/api/generate'),false);
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({test_only:true,passed:true,checks:[
       'separate human/model source panels and history','criteria initially unset','failed save preserves draft',
       'reload preserves draft','review success keeps old model observation','edit-fill never POSTs',
-      'historical edit warns last-ready baseline','explicit rule planner request; no implicit generation'],posts:posts.map(p=>p.pathname),errors}));
+      'historical edit warns last-ready baseline','explicit rule planner request; no implicit generation',
+      'model deployment defaults local model; CPU-only deployment defaults rule and disables model'],posts:posts.map(p=>p.pathname),errors}));
   } finally {await browser.close()}
 })().catch(error=>{console.error(error);process.exitCode=1});
