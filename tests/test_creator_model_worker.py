@@ -87,6 +87,33 @@ def test_valid_patch_structure_is_not_evidence_of_user_intent_match():
     assert plan_request('保持前进不变，只在第8到10秒抬头', previous, proposal)['status'] == 'clarify'
 
 
+def test_invalid_model_time_returns_explicit_clarification_and_keeps_original(tmp_path, monkeypatch):
+    from training.creator import model_worker as worker
+    (tmp_path / 'config.json').write_text('{}')
+    proposal = _patch(0.1, 1)
+    monkeypatch.setattr(worker, '_generate', lambda *args: proposal)
+    result = worker.execute_request(tmp_path, dict(kind='plan', text='第0.1到1秒抬头',
+                                                  previous_plan=None, capabilities={}), tmp_path)
+    assert result['status'] == 'clarify' and result['edits'] == []
+    assert '未通过' in result['explanation']
+    assert json.loads((tmp_path / 'model-proposal.json').read_text(encoding='utf-8')) == proposal
+    assert json.loads((tmp_path / 'model-validation.json').read_text(encoding='utf-8'))['accepted'] is False
+
+
+def test_numeric_new_plan_uses_patch_only_prompt_and_keeps_all_scope(tmp_path, monkeypatch):
+    from training.creator import model_worker as worker
+    (tmp_path / 'config.json').write_text('{}')
+    seen = []
+    proposal = dict(status='ready', explanation='先右移，再镜头低头。', goals=['输入右移和镜头低头'], edit_scope='all',
+                    edits=[dict(op='replace_intervals', key='D', intervals=[dict(start_seconds=0, end_seconds=4)]),
+                           dict(op='replace_intervals', key='K', intervals=[dict(start_seconds=4, end_seconds=6)])])
+    monkeypatch.setattr(worker, '_generate', lambda p, s, c: seen.append((s,c)) or proposal)
+    result = worker.execute_request(tmp_path, dict(kind='plan', text='前4秒向右移动，然后低头2秒',
+                                                  previous_plan=None, capabilities={}), tmp_path)
+    assert result == proposal and 'EVERY requested action' in seen[0][0]
+    assert worker._read_json(seen[0][1])['requested_edit_scope'] == 'all'
+
+
 @pytest.mark.parametrize('template,expected', [
     ('{{ messages }}', {}),
     ('{% if enable_thinking %}<think>{% endif %}', {'enable_thinking': False}),

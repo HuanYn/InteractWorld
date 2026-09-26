@@ -116,6 +116,43 @@ def test_typed_proposal_is_checked_against_text_not_its_explanation():
         assert result["status"] == "clarify" and result["action_segments"] == []
 
 
+def test_patch_goals_are_rebuilt_from_all_compiled_tracks_not_model_prose():
+    previous = plan_request("一直前进，后半段抬头")
+    proposal = dict(status="ready", edit_scope="movement",
+                    edits=[edit(key="W", start=1.25, end=4.5)],
+                    goals=["前3.25秒前进", "镜头已经成功抬头"])
+    result = plan_request("保持镜头不变，只在第1.25到4.5秒前进", previous, proposal)
+    assert result["status"] == "ready"
+    assert result["goals"] == [
+        "控制输入目标（不代表画面已完成）：W 向前移动输入 [1.25,4.5) 秒",
+        "控制输入目标（不代表画面已完成）：I 镜头抬头输入 [7.5,15) 秒",
+    ]
+    assert plan_request("取消前进", result)["status"] == "ready"
+
+
+def test_legacy_exact_proposal_and_fallback_also_use_compiled_goals():
+    previous = plan_request("一直前进，后半段抬头")
+    expected = plan_request("保留前进，第8到10秒抬头", previous)
+    proposal = dict(expected, goals=["后半段抬头"])
+    result = plan_request("保留前进，第8到10秒抬头", previous, proposal)
+    assert result["status"] == "ready"
+    assert result["goals"] == expected["goals"] == [
+        "控制输入目标（不代表画面已完成）：W 向前移动输入 [0,15) 秒",
+        "控制输入目标（不代表画面已完成）：I 镜头抬头输入 [8,10) 秒",
+    ]
+
+
+def test_nonpatch_goals_are_unchanged_and_patch_cancellation_is_explicit():
+    plain = dict(edit_scope="all", action_segments=[dict(frames=240, keys=["W"])],
+                 goals=["模型原有目标"])
+    assert plan_request("前进", proposal=plain)["goals"] == ["模型原有目标"]
+    previous = plan_request("一直前进，后半段抬头")
+    removal = dict(edit_scope="camera", edits=[dict(op="replace_intervals", key="I", intervals=[])])
+    result = plan_request("取消抬头", previous, removal)
+    assert any("W " in goal and "[0,15)" in goal for goal in result["goals"])
+    assert any("I " in goal and "该键已取消" in goal for goal in result["goals"])
+
+
 def test_legacy_proposal_must_match_precise_time_and_preserve_every_other_key():
     previous = dict(action_segments=[dict(frames=240, keys=["W", "J"])])
     good = plan_request("第8到10秒抬头", previous)

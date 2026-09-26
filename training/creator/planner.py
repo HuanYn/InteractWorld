@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from .timeline_patch import compile_edits, edits_from_intervals, seconds_to_frame
+from .timeline_patch import (compile_edits, edits_from_intervals, frame_seconds,
+                             intervals_from_rows, seconds_to_frame)
 
 
 TOTAL_FRAMES = 240
@@ -72,6 +73,25 @@ def compress_segments(rows: list[tuple[str, ...]]) -> list[dict]:
     return segments
 
 
+def _compiled_control_goals(rows, edit_patch):
+    """Describe executable tracks, not model-authored prose or observed success."""
+    goals = []
+    edited_keys = {edit["key"] for edit in edit_patch["edits"]}
+    for key in KEYS:
+        intervals = intervals_from_rows(rows, key)
+        if not intervals and key not in edited_keys:
+            continue
+        spans = [f"[{frame_seconds(start)},{frame_seconds(end)})" for start, end in intervals]
+        detail = "、".join(spans) + " 秒" if spans else "无按键区间（该键已取消）"
+        prefix = f"控制输入目标（不代表画面已完成）：{key} {LABELS[key]}输入 "
+        if len(prefix + detail) > 200:
+            # Keep the existing 200-character goal contract. Dense protected
+            # tracks remain fully specified in action_segments, never dropped.
+            detail = "、".join(spans[:6]) + f" 秒；另有 {len(spans) - 6} 个区间，完整边界见动作时间线"
+        goals.append(prefix + detail)
+    return goals
+
+
 def _result(status, explanation, rows=None, goals=None, scope="all", preserved=False,
             kind="rule_fallback", edit_patch=None):
     result = dict(status=status, explanation=explanation,
@@ -79,6 +99,7 @@ def _result(status, explanation, rows=None, goals=None, scope="all", preserved=F
                 goals=goals or [], edit_scope=scope, preserved=preserved, planner_kind=kind)
     if edit_patch is not None:
         result["edit_patch"] = edit_patch
+        result["goals"] = _compiled_control_goals(rows, edit_patch)
     return result
 
 
