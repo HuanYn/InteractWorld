@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import re
@@ -17,11 +18,15 @@ from training.creator.planner import plan_request, expand_segments, KEYS
 
 
 class CreatorService:
-    def __init__(self, demo, *, provider=None, sessions_root=None, visual_revision_enabled=False):
+    def __init__(self, demo, *, provider=None, sessions_root=None, visual_revision_enabled=False,
+                 serialize_model_and_video=False):
         self.demo = demo
         self.provider = provider
         require(type(visual_revision_enabled) is bool, 'visual_revision_enabled must be an operator boolean')
         self.visual_revision_enabled = visual_revision_enabled
+        require(type(serialize_model_and_video) is bool, 'serialize_model_and_video must be an operator boolean')
+        self.serialize_model_and_video = serialize_model_and_video
+        self._model_active = False
         self.root = Path(sessions_root or demo.deployment.project_root / 'sessions')
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
@@ -34,6 +39,29 @@ class CreatorService:
 
     def _save(self, session):
         write_json(self.root / (session['session_id'] + '.json'), session)
+
+    @contextmanager
+    def _model_slot(self):
+        """Fail fast for a single-card deployment; GPU authority stays in its guard."""
+        if not self.serialize_model_and_video:
+            yield
+            return
+        with self.lock:
+            if self._model_active or any(job.get('status') in ('queued', 'running')
+                                         for job in self.demo.list_jobs()):
+                raise QueueFullError('单卡串行模式：模型或视频任务正在运行，请等待结束后再提交。')
+            self._model_active = True
+        try:
+            yield
+        finally:
+            with self.lock:
+                self._model_active = False
+
+    def _submit_video(self, payload):
+        with self.lock:
+            if self.serialize_model_and_video and self._model_active:
+                raise QueueFullError('单卡串行模式：模型正在工作，尚未创建视频任务，请稍后再提交。')
+            return self.demo.submit(payload)
 
     def _session(self, sid):
         require(isinstance(sid, str) and sid in self.sessions, 'unknown session')
@@ -107,7 +135,10 @@ class CreatorService:
             head = session['versions'][-1]['version_id'] if session['versions'] else None
             self.operations[rid] = session['session_id']
         try:
-            proposal = provider.plan(text, previous) if provider else None
+            proposal = None
+            if provider:
+                with self._model_slot():
+                    proposal = provider.plan(text, previous)
             plan = plan_request(text, previous=previous, proposal=proposal)
             with self.lock:
                 require((session['versions'][-1]['version_id'] if session['versions'] else None) == head, 'plan changed while model was working; submit your edit again')
@@ -130,7 +161,7 @@ class CreatorService:
             require(version['plan']['status'] == 'ready', 'clarify unsupported/ambiguous requests before generation')
             if version.get('job_id'):
                 return self.snapshot(session)
-            job = self.demo.submit(dict(scene_id=session['scene_id'], seed=session['seed'], action_segments=version['plan']['action_segments']))
+            job = self._submit_video(dict(scene_id=session['scene_id'], seed=session['seed'], action_segments=version['plan']['action_segments']))
             version['job_id'] = job['job_id']
             self._save(session)
             return self.snapshot(session)
@@ -180,7 +211,7 @@ class CreatorService:
                 return self.snapshot(session)
             require(previous.get('retry_count', 0) < 2, 'two retries exhausted; resolve the failure before a new request')
             require(previous['plan']['status'] == 'ready', 'cannot retry a non-executable plan')
-            job = self.demo.submit(dict(scene_id=session['scene_id'], seed=session['seed'], action_segments=previous['plan']['action_segments']))
+            job = self._submit_video(dict(scene_id=session['scene_id'], seed=session['seed'], action_segments=previous['plan']['action_segments']))
             version = copy.deepcopy(previous)
             version.update(version_id=uuid.uuid4().hex, parent_version=previous['version_id'],
                 retry_of=previous['version_id'], retry_count=previous.get('retry_count', 0) + 1,
@@ -228,11 +259,12 @@ class CreatorService:
             require(op not in self.operations, 'inspection already running')
             self.operations[op] = True
         try:
-            if reference is None:
-                result = self.provider.inspect(str(directory / 'raw.mp4'), goals)
-            else:
-                result = self.provider.inspect(str(directory / 'raw.mp4'), goals,
-                    reference_video_path=str(self._completed(reference) / 'raw.mp4'))
+            with self._model_slot():
+                if reference is None:
+                    result = self.provider.inspect(str(directory / 'raw.mp4'), goals)
+                else:
+                    result = self.provider.inspect(str(directory / 'raw.mp4'), goals,
+                        reference_video_path=str(self._completed(reference) / 'raw.mp4'))
             require(isinstance(result, dict) and result.get('verdict') in ('satisfied', 'unsatisfied', 'uncertain'), 'invalid visual assessment')
             require(result.get('decision') in ('accept', 'revise', 'ask_user', 'stop'), 'invalid visual decision')
             original_judgment = result.get('original_model_judgment')
@@ -292,7 +324,8 @@ class CreatorService:
             user_text = version['text']
             head = session['versions'][-1]['version_id']
         try:
-            proposal = self.provider.plan(text, previous)
+            with self._model_slot():
+                proposal = self.provider.plan(text, previous)
             plan = plan_request(text, previous=previous, proposal=proposal)
             require(plan['status'] == 'ready', 'visual revision did not produce an executable plan; ask the user')
             before, after = expand_segments(previous['action_segments']), expand_segments(plan['action_segments'])
@@ -349,6 +382,7 @@ def make_server(creator, port=None):
                         rule_planner_available=True,
                         observer_kind='uncalibrated_local_vlm' if creator.provider else 'human_only', max_auto_revisions=1,
                         visual_revision_enabled=creator.visual_revision_enabled,
+                        serialize_model_and_video=creator.serialize_model_and_video,
                         fps=16, future_frames=240, prompt_editing=False, realtime=False))
                 else:
                     super().do_GET()
@@ -359,6 +393,9 @@ def make_server(creator, port=None):
             routes = {'/api/plan': creator.plan, '/api/generate': creator.generate, '/api/review': creator.review,
                       '/api/inspect': creator.inspect, '/api/revise': creator.revise, '/api/accept': creator.accept,
                       '/api/retry': creator.retry}
+            if creator.serialize_model_and_video:
+                # The inherited demo submission endpoint shares this same gate.
+                routes['/api/jobs'] = creator._submit_video
             if self.path not in routes:
                 return super().do_POST()
             try:
@@ -370,7 +407,7 @@ def make_server(creator, port=None):
                 size = int(self.headers.get('Content-Length', '0'))
                 require(0 < size <= 65536, 'request body exceeds64KB or is empty')
                 payload = json.loads(self.rfile.read(size))
-                self.json(routes[self.path](payload))
+                self.json(routes[self.path](payload), status=202 if self.path == '/api/jobs' else 200)
             except QueueFullError as error:
                 self.json({'error': str(error)}, status=429)
             except (ValueError, TypeError, KeyError) as error:

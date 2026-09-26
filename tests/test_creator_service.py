@@ -6,11 +6,14 @@ The in-memory queue and canned visual assessment exist only inside unit tests.
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import pytest
 
 from training.creator.planner import plan_request
 from training.creator.service import CreatorService
+from training.demo.service import QueueFullError
 
 
 class UnitTestQueue:
@@ -450,3 +453,131 @@ def test_visual_revision_cannot_undo_the_users_shortening_request(service):
         service.revise(target(edited))
     assert len(service.list_sessions()[0]['versions']) == 2
     assert service.operations == {}
+
+
+def prepare_model_operation(service, operation):
+    """Use only CPU test doubles; prepare a real service operation, not GPU work."""
+    session = complete(service, make_plan(service))
+    if operation == 'plan':
+        return lambda: make_plan(service, request_id='serial-model-plan-002')
+    if operation == 'inspect':
+        return lambda: service.inspect(target(session))
+    service.inspect(target(session))
+    return lambda: service.revise(target(session))
+
+
+@pytest.mark.parametrize('operation', ['plan', 'inspect', 'revise'])
+@pytest.mark.parametrize('video_status', ['queued', 'running'])
+def test_serial_model_operations_reject_busy_video_before_provider_call(service, operation, video_status):
+    service.serialize_model_and_video = True
+    call = prepare_model_operation(service, operation)
+    service.demo.jobs['unit-busy-video'] = {'job_id': 'unit-busy-video', 'status': video_status}
+    before = (deepcopy(service.provider.plans), deepcopy(service.provider.inspections))
+    with pytest.raises(QueueFullError, match='单卡串行'):
+        call()
+    assert (service.provider.plans, service.provider.inspections) == before
+    assert not service._model_active and not service.operations
+
+
+@pytest.mark.parametrize('operation', ['plan', 'inspect', 'revise'])
+def test_serial_active_model_rejects_submissions_without_creating_jobs(service, operation):
+    service.serialize_model_and_video = True
+    pending = make_plan(service, request_id='serial-pending-plan', planner='rule_fallback')
+    failed = service.generate(target(pending))
+    service.demo.jobs[failed['versions'][-1]['job_id']]['status'] = 'failed'
+    ready = make_plan(service, request_id='serial-ready-plan', planner='rule_fallback')
+    call = prepare_model_operation(service, operation)
+    entered, release = threading.Event(), threading.Event()
+    provider_method = 'inspect' if operation == 'inspect' else 'plan'
+    original = getattr(service.provider, provider_method)
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5), 'unit test failed to release model stub'
+        return original(*args, **kwargs)
+
+    setattr(service.provider, provider_method, blocked)
+    before_jobs = deepcopy(service.demo.jobs)
+    before_failed = deepcopy(service._session(failed['session_id'])['versions'])
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(call)
+        try:
+            assert entered.wait(timeout=5)
+            with pytest.raises(QueueFullError):
+                service.generate(target(ready))
+            with pytest.raises(QueueFullError):
+                service.retry({**target(failed), 'request_id': 'serial-retry-busy'})
+            with pytest.raises(QueueFullError):
+                make_plan(service, request_id='serial-second-model')
+            # CPU edits remain available while the model owns this card.
+            rule = make_plan(service, request_id='serial-rule-during-model', planner='rule_fallback')
+            assert rule['versions'][-1]['plan']['status'] == 'ready'
+            assert service.demo.jobs == before_jobs
+            assert service._session(failed['session_id'])['versions'] == before_failed
+        finally:
+            release.set()
+        future.result(timeout=5)
+    assert not service._model_active and not service.operations
+    service.generate(target(ready))
+    assert len(service.demo.jobs) == len(before_jobs) + 1
+
+
+@pytest.mark.parametrize('operation', ['plan', 'inspect', 'revise'])
+def test_serial_model_failure_releases_slot_and_preserves_default_mode(service, operation):
+    service.serialize_model_and_video = True
+    call = prepare_model_operation(service, operation)
+    provider_method = 'inspect' if operation == 'inspect' else 'plan'
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('UNIT TEST ONLY: model failure')
+
+    setattr(service.provider, provider_method, fail)
+    with pytest.raises(RuntimeError, match='model failure'):
+        call()
+    assert not service._model_active and not service.operations
+    ready = make_plan(service, request_id='serial-rule-after-failure', planner='rule_fallback')
+    service.generate(target(ready))
+
+
+def test_serial_mode_is_explicit_and_default_does_not_reject_other_video_work(service):
+    assert service.serialize_model_and_video is False
+    first = service.generate(target(make_plan(service)))
+    second = make_plan(service, request_id='default-second-model')
+    assert second['versions'][-1]['plan']['status'] == 'ready'
+    assert service.demo.jobs[first['versions'][0]['job_id']]['status'] == 'queued'
+    assert len(service.provider.plans) == 2
+
+
+def test_serial_mode_requires_operator_boolean(tmp_path):
+    with pytest.raises(ValueError, match='operator boolean'):
+        CreatorService(UnitTestQueue(tmp_path), serialize_model_and_video='yes')
+
+
+def test_serial_legacy_http_submit_returns_429_without_a_job(service):
+    import http.client
+    import json
+    from training.creator.service import make_server
+
+    service.serialize_model_and_video = True
+    service.demo.deployment.host = '127.0.0.1'
+    service.demo.deployment.port = 0
+    service.demo.csrf_token = 'unit-test-csrf-not-a-secret'
+    server = make_server(service)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=3)
+    try:
+        with service._model_slot():
+            connection.request('POST', '/api/jobs', body=json.dumps({'scene_id': 'courtyard'}), headers={
+                'Content-Type': 'application/json', 'Origin': f'http://127.0.0.1:{port}',
+                'X-InterActWorld-CSRF': service.demo.csrf_token})
+            response = connection.getresponse()
+            assert response.status == 429
+            assert '单卡串行' in json.loads(response.read())['error']
+        assert service.demo.submitted == [] and service.demo.jobs == {}
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
