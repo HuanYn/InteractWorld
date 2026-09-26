@@ -125,6 +125,78 @@ def test_visual_revision_does_not_replace_a_newer_user_plan(service):
         service.revise(target(original))
 
 
+def test_explicit_rule_planning_never_calls_model_or_submits_gpu(service):
+    session = make_plan(service, planner='rule_fallback')
+    version = session['versions'][-1]
+    assert version['planner_kind'] == 'rule_fallback'
+    assert version['provider'] == 'rule_fallback'
+    assert version['plan']['status'] == 'ready'
+    assert service.provider.plans == [] and service.demo.submitted == []
+    assert make_plan(service, planner='rule_fallback') == session
+    with pytest.raises(ValueError, match='different planner mode'):
+        make_plan(service, planner='local_model')
+    modified = make_plan(service, session_id=session['session_id'], planner='rule_fallback',
+        request_id='explicit-rule-edit-001', text='保留前进，只缩短抬头')
+    assert modified['versions'][-1]['plan']['status'] == 'ready'
+    assert service.provider.plans == [] and service.demo.submitted == []
+
+
+def test_model_failure_does_not_silently_fall_back_to_rules(service):
+    def fail(*args):
+        raise RuntimeError('UNIT TEST: cold load failed')
+    service.provider.plan = fail
+    with pytest.raises(RuntimeError, match='cold load failed'):
+        make_plan(service, planner='local_model')
+    assert all(not s['versions'] for s in service.sessions.values())
+    assert not service.operations and not service.demo.submitted
+
+
+def test_rule_only_server_rejects_explicit_model_and_unknown_modes(service):
+    service.provider = None
+    with pytest.raises(ValueError, match='not configured'):
+        make_plan(service, planner='local_model')
+    with pytest.raises(ValueError, match='unknown planner'):
+        make_plan(service, planner='silent_auto_fallback')
+    assert not service.sessions
+    assert make_plan(service)['versions'][-1]['provider'] == 'rule_fallback'
+
+
+def test_human_criteria_and_prior_assessments_survive_edits_and_reload(service):
+    session = complete(service, make_plan(service))
+    inspected = service.inspect(target(session))
+    assessment = deepcopy(inspected['versions'][-1]['review'])
+    first = service.review({**target(session), 'verdict': 'uncertain',
+        'evidence': 'UNIT TEST ONLY: compare movement and camera separately.',
+        'criteria': {'movement_response': 'satisfied', 'camera_response': 'uncertain'}})
+    human = deepcopy(first['versions'][-1]['review'])
+    second = service.review({**target(session), 'verdict': 'unsatisfied',
+        'evidence': 'UNIT TEST ONLY: revised human observation.',
+        'criteria': {'temporal_stability': 'unsatisfied'}})
+    current = second['versions'][-1]
+    assert current['review']['previous_assessment'] == assessment
+    assert current['review_history'] == [assessment, human]
+    assert second['accepted_version'] is None
+    reloaded = CreatorService(service.demo, provider=service.provider, visual_revision_enabled=True)
+    persisted = reloaded.list_sessions()[0]['versions'][-1]
+    assert persisted['review'] == current['review']
+    assert persisted['review_history'] == current['review_history']
+    with pytest.raises(ValueError, match='human review already exists'):
+        reloaded.inspect(target(session))
+
+
+@pytest.mark.parametrize('criteria', [None, [], {'unknown': 'satisfied'},
+    {'camera_response': True}, {'camera_response': 'pass'}])
+def test_invalid_human_criteria_do_not_mutate_session(service, criteria):
+    session = complete(service, make_plan(service))
+    path = service.root / (session['session_id'] + '.json')
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match='invalid human'):
+        service.review({**target(session), 'verdict': 'satisfied',
+            'evidence': 'UNIT TEST ONLY', 'criteria': criteria})
+    assert path.read_bytes() == before
+    assert service.list_sessions()[0] == session
+
+
 def test_uncertain_insufficient_frames_can_degrade_without_fake_evidence(service):
     session = complete(service, make_plan(service))
     service.provider.assessment = dict(verdict='uncertain', decision='ask_user', evidence=[],

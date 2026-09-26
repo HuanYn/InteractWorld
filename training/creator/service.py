@@ -72,7 +72,11 @@ class CreatorService:
 
     def plan(self, payload):
         require(isinstance(payload, dict), 'request must be an object')
-        require(set(payload) <= {'session_id', 'scene_id', 'seed', 'text', 'request_id'}, 'unexpected plan fields')
+        require(set(payload) <= {'session_id', 'scene_id', 'seed', 'text', 'request_id', 'planner'}, 'unexpected plan fields')
+        planner = payload.get('planner', 'local_model' if self.provider else 'rule_fallback')
+        require(planner in ('local_model', 'rule_fallback'), 'unknown planner mode')
+        require(planner != 'local_model' or self.provider is not None, 'local model is not configured; explicitly choose rule_fallback')
+        provider = self.provider if planner == 'local_model' else None
         text = payload.get('text', '')
         rid = payload.get('request_id')
         require(isinstance(text, str) and 0 < len(text.strip()) <= 2000, 'instruction needs1..2000 characters')
@@ -81,6 +85,8 @@ class CreatorService:
             for existing in self.sessions.values():
                 for version in existing['versions']:
                     if version.get('request_id') == rid:
+                        previous_mode = version.get('planner_kind', 'rule_fallback' if version.get('provider') == 'rule_fallback' else 'local_model')
+                        require(previous_mode == planner, 'request_id reused with different planner mode')
                         require(version['text'] == text and (not payload.get('session_id') or payload['session_id'] == existing['session_id']), 'request_id reused with different input')
                         require(payload.get('scene_id', existing['scene_id']) == existing['scene_id'] and payload.get('seed', existing['seed']) == existing['seed'], 'request_id condition mismatch')
                         return self.snapshot(existing)
@@ -101,7 +107,7 @@ class CreatorService:
             head = session['versions'][-1]['version_id'] if session['versions'] else None
             self.operations[rid] = session['session_id']
         try:
-            proposal = self.provider.plan(text, previous) if self.provider else None
+            proposal = provider.plan(text, previous) if provider else None
             plan = plan_request(text, previous=previous, proposal=proposal)
             with self.lock:
                 require((session['versions'][-1]['version_id'] if session['versions'] else None) == head, 'plan changed while model was working; submit your edit again')
@@ -109,7 +115,8 @@ class CreatorService:
                 session['versions'].append(dict(version_id=vid, parent_version=previous_version['version_id'] if previous_version else None,
                     text=text, plan=plan, job_id=None, review=None, created_at=time.time(), request_id=rid,
                     root_request=vid, automatic_revisions=0, origin='user',
-                    provider=getattr(self.provider, 'name', 'local_model_command') if self.provider else 'rule_fallback'))
+                    planner_kind=planner,
+                    provider=getattr(provider, 'name', 'local_model_command') if provider else 'rule_fallback'))
                 self._save(session)
                 return self.snapshot(session)
         finally:
@@ -190,9 +197,19 @@ class CreatorService:
             require(payload.get('verdict') in ('satisfied', 'unsatisfied', 'uncertain'), 'invalid verdict')
             evidence = payload.get('evidence', '')
             require(isinstance(evidence, str) and 0 < len(evidence.strip()) <= 2000, 'please give an observation, not just a score')
+            criteria = payload.get('criteria', {})
+            require(isinstance(criteria, dict) and set(criteria) <= {
+                'movement_response', 'camera_response', 'temporal_stability'}, 'invalid human review criteria')
+            require(all(value in ('satisfied', 'unsatisfied', 'uncertain') for value in criteria.values()),
+                    'invalid human criterion verdict')
             previous = version.get('review')
+            if previous:
+                version.setdefault('review_history', []).append(copy.deepcopy(previous))
+            assessment = (previous if previous and previous.get('source') != 'human'
+                          else previous.get('previous_assessment') if previous else None)
             version['review'] = dict(verdict=payload['verdict'], evidence=evidence, source='human', decision='ask_user',
-                                     created_at=time.time(), previous_assessment=previous if previous and previous.get('source') != 'human' else None)
+                                     criteria=copy.deepcopy(criteria), created_at=time.time(),
+                                     previous_assessment=copy.deepcopy(assessment))
             self._save(session)
             return self.snapshot(session)
 
@@ -329,6 +346,7 @@ def make_server(creator, port=None):
                 elif route == '/api/config':
                     self.json(dict(csrf_token=creator.demo.csrf_token, scenes=creator.demo.catalog.public(),
                         generation_enabled=bool(creator.demo.deployment.guard_command), planner_kind='local_model' if creator.provider else 'rule_fallback',
+                        rule_planner_available=True,
                         observer_kind='uncalibrated_local_vlm' if creator.provider else 'human_only', max_auto_revisions=1,
                         visual_revision_enabled=creator.visual_revision_enabled,
                         fps=16, future_frames=240, prompt_editing=False, realtime=False))

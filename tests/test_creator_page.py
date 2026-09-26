@@ -81,3 +81,29 @@ def test_invalid_plan_has_no_diff_and_review_evidence_keeps_video_identity():
         '当前视频 · 6 秒 · current only\n'
         '当前视频 · 8 秒 · legacy current'
     )
+
+
+def test_review_records_keep_human_and_model_separate_without_duplicates():
+    model = dict(source='model_assessment', verdict='uncertain', evidence='model observation', created_at=1)
+    first = dict(source='human', verdict='unsatisfied', evidence='human first',
+                 criteria=dict(camera_response='unsatisfied'), created_at=2,
+                 previous_assessment=model)
+    second = dict(source='human', verdict='satisfied', evidence='human second', created_at=3,
+                  previous_assessment=model)
+    version = dict(review_history=[model, first], review=second)
+    records = browser_helper(f'reviewRecords({json.dumps(version)})')
+    assert [item['source'] for item in records] == ['model_assessment', 'human', 'human']
+    assert [item['evidence'] for item in records] == ['model observation', 'human first', 'human second']
+    assert all('previous_assessment' not in item for item in records)
+
+
+def test_review_edit_warns_when_viewed_version_is_not_last_ready_baseline():
+    versions = [dict(version_id='old', plan=plan((240, ['W']))),
+                dict(version_id='ready', plan=plan((240, ['W', 'I']))),
+                dict(version_id='clarify', plan=dict(status='clarify'))]
+    result = browser_helper(
+        'selectedId="test"; sessions=[{session_id:"test",versions:' + json.dumps(versions) + '}];'
+        '[reviewEditWarning("old"), reviewEditWarning("ready")]'
+    )
+    assert '版本 2' in result[0]
+    assert result[1] == ''

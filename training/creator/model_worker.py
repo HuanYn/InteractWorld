@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import copy
+from contextvars import ContextVar
+from datetime import datetime, timezone
 import importlib.util
 import json
 import math
@@ -27,6 +29,75 @@ import time
 KEYS = frozenset("WASDIJKL")
 PLAN_FIELDS = {"status", "explanation", "action_segments", "goals", "edit_scope"}
 INSPECT_FIELDS = {"verdict", "evidence", "decision", "revision_text", "confidence_note"}
+_PROGRESS = ContextVar("creator_model_progress", default=None)
+
+
+class _WorkerProgress:
+    """Last-observed stages, retained even if the outer guard kills the worker.
+
+    A running snapshot is not a heartbeat or proof of a still-live process. Use
+    its PID/timestamp together with the guard result to diagnose forced exits.
+    Writes replace a small sidecar atomically; no model/data hashes or copies.
+    """
+    def __init__(self, directory):
+        self.path = directory / "model-progress.json"
+        if self.path.exists():
+            raise ValueError("refusing to overwrite existing worker progress; use a new request directory")
+        self.started = time.monotonic()
+        self.active_started = self.started
+        self.state = {"schema_version": 1, "pid": os.getpid(), "status": "running",
+                      "status_is_last_observation": True, "active_stage": None,
+                      "started_at": self._utc(), "stages": []}
+        self._save()
+
+    @staticmethod
+    def _utc():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _save(self):
+        self.state.update(observed_at=self._utc(), elapsed_seconds=time.monotonic() - self.started)
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(self.state, ensure_ascii=False, allow_nan=False, indent=2) + "\n",
+                             encoding="utf-8")
+        temporary.replace(self.path)
+        print(json.dumps({"event": "model_stage", "stage": self.state["active_stage"],
+                          "status": self.state["status"], "elapsed_seconds": self.state["elapsed_seconds"]}),
+              file=sys.stderr, flush=True)
+
+    def _close_active(self, status):
+        if self.state["active_stage"] is not None:
+            self.state["stages"][-1].update(status=status, elapsed_seconds=time.monotonic() - self.active_started)
+
+    def mark(self, name):
+        self._close_active("completed")
+        self.active_started = time.monotonic()
+        self.state["active_stage"] = name
+        self.state["stages"].append({"name": name, "status": "running", "started_at": self._utc(),
+                                     "start_elapsed_seconds": self.active_started - self.started})
+        self._save()
+
+    def finish(self, status, error=None):
+        self._close_active(status)
+        self.state["status"] = status
+        self.state["last_stage"] = self.state["active_stage"]
+        self.state["active_stage"] = None
+        if error is not None:
+            self.state["error"] = {"type": type(error).__name__, "message": str(error)[:2000]}
+        self._save()
+
+    def timings(self):
+        totals = {}
+        for stage in self.state["stages"]:
+            if "elapsed_seconds" in stage:
+                totals[stage["name"]] = totals.get(stage["name"], 0.0) + stage["elapsed_seconds"]
+        return totals
+
+
+def _mark_stage(name):
+    progress = _PROGRESS.get()
+    if progress is not None:
+        progress.mark(name)
+
 
 PLAN_PROMPT = """You translate user intent into a PROPOSED action timeline for InterActWorld.
 Return exactly one JSON object, no reasoning, think tags, Markdown or surrounding text, with ONLY:
@@ -369,19 +440,24 @@ def _render_prompt(processor, messages):
 def _generate(model_path, system_prompt, text, samples=(), reference_samples=()):
     _require(len(samples) <= 8 and len(reference_samples) <= 8, "inspection is limited to eight frames per video")
     _require(not reference_samples or samples, "reference frames require current frames")
+    _mark_stage("model_imports")
     import torch
     import transformers
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
+    _mark_stage("cuda_preflight")
     _require(torch.cuda.is_available(), "guarded model execution requires CUDA; CPU fallback is disabled")
     _require(torch.cuda.is_bf16_supported(), "the selected GPU must support BF16")
+    _mark_stage("processor_load")
     processor = AutoProcessor.from_pretrained(str(model_path), local_files_only=True, trust_remote_code=False)
     # Transformers 4.x accepts torch_dtype; 5.x uses dtype.
     dtype_key = "dtype" if int(transformers.__version__.split(".")[0]) >= 5 else "torch_dtype"
+    _mark_stage("model_load")
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         str(model_path), local_files_only=True, trust_remote_code=False,
         attn_implementation="sdpa", device_map={"": "cuda:0"}, **{dtype_key: torch.bfloat16},
     ).eval()
+    _mark_stage("input_prepare")
     content = [{"type": "text", "text": text}]
     images = []
     if samples:
@@ -395,9 +471,11 @@ def _generate(model_path, system_prompt, text, samples=(), reference_samples=())
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": content}]
     prompt = _render_prompt(processor, messages)
     inputs = processor(text=[prompt], images=images or None, padding=True, return_tensors="pt").to(model.device)
+    _mark_stage("inference")
     with torch.inference_mode():
         generated = model.generate(**inputs, max_new_tokens=512 if samples and not reference_samples else 768,
                                    do_sample=False, max_time=90.0, use_cache=True)
+    _mark_stage("response_decode")
     answer = processor.batch_decode(generated[:, inputs["input_ids"].shape[-1]:],
                                     skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
     # Never extract a plausible object from malformed/truncated generated text.
@@ -405,6 +483,7 @@ def _generate(model_path, system_prompt, text, samples=(), reference_samples=())
 
 
 def execute_request(model_path, request, runtime_root):
+    _mark_stage("request_validate")
     _require(isinstance(request, dict) and request.get("kind") in ("plan", "inspect"), "unknown request kind")
     _require(model_path.is_dir() and (model_path / "config.json").is_file(), "model must be an existing local directory")
     if request["kind"] == "plan":
@@ -424,7 +503,9 @@ def execute_request(model_path, request, runtime_root):
         )
         content = json.dumps({"text": text, "previous_plan": previous, "capabilities": capabilities,
                               "requested_edit_scope": requested_scope}, ensure_ascii=False)
-        return validate_plan(_generate(model_path, PLAN_PROMPT + scope_instruction, content))
+        proposal = _generate(model_path, PLAN_PROMPT + scope_instruction, content)
+        _mark_stage("response_validate")
+        return validate_plan(proposal)
     goals = request.get("goals")
     _require(isinstance(goals, list) and goals and all(isinstance(goal, str) and goal.strip() for goal in goals), "invalid inspection goals")
     _require(isinstance(request.get("video_path"), str), "inspection needs a raw video path")
@@ -443,16 +524,19 @@ def execute_request(model_path, request, runtime_root):
         _require(Path(reference_path).is_file(), "reference raw video does not exist")
         _require(not Path(reference_path).samefile(request["video_path"]), "reference must be a different raw video")
     directory = Path(tempfile.mkdtemp(prefix="raw-frames-", dir=runtime_root))
+    _mark_stage("sample_current")
     samples, reason = sample_frames(request["video_path"], directory / "current")
     if not samples:
         return apply_observation_rules(_uncertain(reason), semantics, reference_used=False,
                                        model_called=False, reasons=("current_sampling_insufficient",))
     reference_samples = []
     if reference_path is not None:
+        _mark_stage("sample_reference")
         reference_samples, reason = sample_frames(reference_path, directory / "reference")
         if not reference_samples:
             return apply_observation_rules(_uncertain(reason), semantics, reference_used=False,
                                            model_called=False, reasons=("reference_sampling_insufficient",))
+    _mark_stage("inspection_prepare")
     # action_segments may be present in a request, but must never reach the critic.
     times = [item[1] for item in samples]
     reference_times = [item[1] for item in reference_samples] if reference_samples else None
@@ -462,6 +546,7 @@ def execute_request(model_path, request, runtime_root):
                          ensure_ascii=False)
     judgment = (_generate(model_path, INSPECT_PROMPT, content, samples, reference_samples=reference_samples)
                 if reference_samples else _generate(model_path, INSPECT_PROMPT, content, samples))
+    _mark_stage("response_validate")
     judgment = validate_inspection(judgment, times, reference_times)
     return apply_observation_rules(judgment, semantics, reference_used=bool(reference_samples))
 
@@ -475,24 +560,38 @@ def main(argv=None):
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     _require(not output.exists(), "refusing to overwrite an existing worker response")
-    _offline_environment(output.parent)
-    started = time.monotonic()
+    progress = _WorkerProgress(output.parent)
+    token = _PROGRESS.set(progress)
     try:
+        _mark_stage("environment_setup")
+        _offline_environment(output.parent)
+        _mark_stage("request_read")
         _require(args.request.stat().st_size <= 262144, "request JSON is too large")
         request = _read_json(args.request.read_text(encoding="utf-8"))
         result = execute_request(args.model.resolve(), request, output.parent)
+        _mark_stage("output_write")
         output.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2) + "\n", encoding="utf-8")
+        progress.finish("completed")
         return 0
     except Exception as error:
         # An error object is diagnostic only; the nonzero exit makes it impossible
         # for CommandProvider to mistake it for a successful plan/assessment.
+        progress.finish("failed", error)
         detail = {"error": type(error).__name__, "message": str(error)}
         output.write_text(json.dumps(detail, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(detail, ensure_ascii=False), file=sys.stderr)
         return 1
     finally:
+        # SIGKILL cannot run finally: the last atomic stage snapshot remains.
+        # KeyboardInterrupt/SystemExit do run finally and must not look successful.
+        _PROGRESS.reset(token)
+        if progress.state["status"] == "running":
+            progress.finish("interrupted")
         torch_module = sys.modules.get('torch')
-        metrics = {'elapsed_seconds': time.monotonic() - started, 'cuda_initialized': False}
+        metrics = {'elapsed_seconds': time.monotonic() - progress.started, 'cuda_initialized': False,
+                   'execution_status': progress.state['status'], 'last_stage': progress.state['last_stage'],
+                   'stage_seconds': progress.timings(), 'progress_file': progress.path.name,
+                   'stage_timing_kind': 'host_wall_clock_no_cuda_synchronization'}
         if torch_module is not None and torch_module.cuda.is_initialized():
             metrics.update(cuda_initialized=True,
                 peak_allocated_bytes=torch_module.cuda.max_memory_allocated(),

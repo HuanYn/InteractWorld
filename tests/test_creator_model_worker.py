@@ -1,5 +1,11 @@
 """CPU-only checks at the model-output / deterministic-planner boundary."""
 import copy
+from contextlib import nullcontext
+import json
+from pathlib import Path
+import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -204,3 +210,147 @@ def test_explicit_half_and_half_more_proposals_follow_extension_policy():
         assert result['status'] == 'ready' and result['preserved'] is True
         assert [i for i, row in enumerate(expand_segments(result['action_segments'])) if 'I' in row] == list(range(start, start+duration))
         previous = result
+
+
+def _install_cpu_model_fixtures(monkeypatch, worker, runtime, *, fail_at=None):
+    """Instrumented CPU test doubles, never evidence of real model inference."""
+    seen = []
+    def observe(stage):
+        snapshot = json.loads((runtime / 'model-progress.json').read_text(encoding='utf-8'))
+        assert snapshot['status'] == 'running' and snapshot['active_stage'] == stage
+        seen.append(stage)
+        if fail_at == stage:
+            raise RuntimeError('CPU fixture failure during ' + stage)
+
+    class Inputs(dict):
+        def to(self, device):
+            return self
+    class Generated:
+        def __getitem__(self, key):
+            return self
+    class Processor:
+        chat_template = '{{ messages }}'
+        def apply_chat_template(self, *args, **kwargs):
+            return 'test prompt'
+        def __call__(self, *args, **kwargs):
+            observe('input_prepare')
+            return Inputs(input_ids=SimpleNamespace(shape=(1, 1)))
+        def batch_decode(self, *args, **kwargs):
+            observe('response_decode')
+            return [json.dumps(_proposal([dict(frames=240, keys=['W'])]))]
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            observe('processor_load')
+            return cls()
+    class Model:
+        device = 'cpu-test-fixture'
+        def eval(self):
+            return self
+        def generate(self, **kwargs):
+            observe('inference')
+            return Generated()
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            observe('model_load')
+            return cls()
+
+    cuda = SimpleNamespace(is_available=lambda: True, is_bf16_supported=lambda: True,
+        is_initialized=lambda: True, max_memory_allocated=lambda: 123, max_memory_reserved=lambda: 456)
+    monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace(cuda=cuda, bfloat16='fixture', inference_mode=nullcontext))
+    monkeypatch.setitem(sys.modules, 'transformers', SimpleNamespace(
+        __version__='5.10.0', AutoProcessor=Processor, Qwen3VLForConditionalGeneration=Model))
+    monkeypatch.setattr(worker, '_offline_environment', lambda directory: None)
+    return seen
+
+
+def _worker_cli(tmp_path):
+    model = tmp_path / 'model'
+    model.mkdir()
+    (model / 'config.json').write_text('{}', encoding='utf-8')
+    request = tmp_path / 'request.json'
+    request.write_text(json.dumps(dict(kind='plan', text='一直前进', capabilities={})), encoding='utf-8')
+    output = tmp_path / 'response.json'
+    return ['--model', str(model), '--request', str(request), '--output', str(output)]
+
+
+def test_worker_records_stage_before_work_and_retains_legacy_success_metrics(tmp_path, monkeypatch):
+    from training.creator import model_worker as worker
+    seen = _install_cpu_model_fixtures(monkeypatch, worker, tmp_path)
+    assert worker.main(_worker_cli(tmp_path)) == 0
+    progress = json.loads((tmp_path / 'model-progress.json').read_text(encoding='utf-8'))
+    metrics = json.loads((tmp_path / 'model-metrics.json').read_text(encoding='utf-8'))
+    result = json.loads((tmp_path / 'response.json').read_text(encoding='utf-8'))
+    assert seen == ['processor_load', 'model_load', 'input_prepare', 'inference', 'response_decode']
+    assert result['status'] == 'ready' and progress['status'] == 'completed'
+    assert progress['active_stage'] is None and progress['last_stage'] == 'output_write'
+    assert all(stage['status'] == 'completed' for stage in progress['stages'])
+    assert metrics['elapsed_seconds'] >= 0 and metrics['cuda_initialized'] is True
+    assert metrics['peak_allocated_bytes'] == 123 and metrics['peak_reserved_bytes'] == 456
+    assert metrics['execution_status'] == 'completed'
+    assert {'model_load', 'processor_load', 'inference'} <= metrics['stage_seconds'].keys()
+    assert all(seconds >= 0 for seconds in metrics['stage_seconds'].values())
+    assert metrics['stage_timing_kind'] == 'host_wall_clock_no_cuda_synchronization'
+    assert worker._PROGRESS.get() is None
+
+
+@pytest.mark.parametrize('failure_stage', ['model_load', 'inference'])
+def test_worker_stage_failure_is_diagnostic_not_success(tmp_path, monkeypatch, failure_stage):
+    from training.creator import model_worker as worker
+    _install_cpu_model_fixtures(monkeypatch, worker, tmp_path, fail_at=failure_stage)
+    assert worker.main(_worker_cli(tmp_path)) == 1
+    progress = json.loads((tmp_path / 'model-progress.json').read_text(encoding='utf-8'))
+    metrics = json.loads((tmp_path / 'model-metrics.json').read_text(encoding='utf-8'))
+    response = json.loads((tmp_path / 'response.json').read_text(encoding='utf-8'))
+    assert progress['status'] == 'failed' and progress['last_stage'] == failure_stage
+    assert progress['stages'][-1]['status'] == 'failed'
+    assert progress['error']['type'] == response['error'] == 'RuntimeError'
+    assert metrics['execution_status'] == 'failed' and metrics['last_stage'] == failure_stage
+    assert metrics['stage_seconds'][failure_stage] >= 0 and worker._PROGRESS.get() is None
+
+
+def test_force_killed_cpu_worker_retains_last_stage_without_fabricated_final_metrics(tmp_path):
+    # Exercise actual subprocess termination, not a mocked finally block. The
+    # child uses no torch, model weights, network, CUDA or execution authority.
+    script = '''
+import sys, time
+from pathlib import Path
+from training.creator.model_worker import _WorkerProgress
+progress = _WorkerProgress(Path(sys.argv[1]))
+progress.mark("model_load")
+time.sleep(60)
+'''
+    process = subprocess.Popen([sys.executable, '-c', script, str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[1], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 10
+        snapshot = None
+        while time.monotonic() < deadline:
+            progress_path = tmp_path / 'model-progress.json'
+            if progress_path.is_file():
+                snapshot = json.loads(progress_path.read_text(encoding='utf-8'))
+                if snapshot['active_stage'] == 'model_load':
+                    break
+            if process.poll() is not None:
+                pytest.fail('CPU diagnostic child exited before its stage snapshot')
+            time.sleep(0.02)
+        assert snapshot and snapshot['active_stage'] == 'model_load'
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=5)
+    retained = json.loads((tmp_path / 'model-progress.json').read_text(encoding='utf-8'))
+    assert retained['active_stage'] == 'model_load' and retained['status'] == 'running'
+    assert retained['status_is_last_observation'] is True and retained['pid'] == process.pid
+    assert retained['stages'][-1]['started_at'] and retained['observed_at']
+    assert not (tmp_path / 'model-metrics.json').exists()
+    assert not (tmp_path / 'response.json').exists()
+
+
+def test_retry_requires_new_directory_to_preserve_killed_worker_diagnostics(tmp_path):
+    from training.creator.model_worker import _WorkerProgress
+    progress = _WorkerProgress(tmp_path)
+    progress.mark('model_load')
+    before = progress.path.read_bytes()
+    with pytest.raises(ValueError, match='existing worker progress'):
+        _WorkerProgress(tmp_path)
+    assert progress.path.read_bytes() == before
