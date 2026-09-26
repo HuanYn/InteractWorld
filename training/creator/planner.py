@@ -526,3 +526,126 @@ def plan_request(text: str, previous: dict | None = None, proposal: dict | None 
     if proposal is not None:
         return _validate_proposal(proposal, intent, original)
     return _fallback(intent, original)
+
+
+def diagnose_proposal(text: str, previous: dict | None = None,
+                      proposal: dict | None = None) -> dict:
+    """Return the unchanged planner result plus bounded repair feedback.
+
+    The request must first be executable by the CPU contract without any model
+    proposal. This does not turn a rule answer into a model answer: feedback
+    contains error locations only, never canonical intervals or a replacement
+    plan. ``no_proposal`` is the preflight-success code. A caller must not run
+    a model on any other preflight code, and may make at most one repair when
+    a submitted proposal has ``repairable=True``. Retry counting is owned by
+    the caller. Explicit model clarification/refusal is not auto-repaired.
+
+    ``plan`` is exactly ``plan_request(text, previous, proposal)``. In
+    particular, no executable rule fallback silently replaces a bad proposal.
+    The request preflight gate applies even to a legacy proposal accepted by
+    the less restrictive historical validator.
+    """
+    plan = plan_request(text, previous, proposal)
+
+    def result(code, repairable, message, **details):
+        return {"plan": plan, "feedback": dict(code=code, repairable=repairable,
+                                               message=message, **details)}
+
+    original = None
+    if previous is not None:
+        try:
+            if not isinstance(previous, dict) or not set(previous).issubset(RESULT_FIELDS):
+                raise ValueError("unknown previous-plan fields")
+            if previous.get("status", "ready") != "ready":
+                raise ValueError("previous plan is not ready")
+            original = expand_segments(previous.get("action_segments"))
+        except (ValueError, TypeError):
+            return result("invalid_baseline", False, "历史基线无效；请先选择一条合法的动作计划。")
+
+    intent, request_error = _parse(text, original)
+    if request_error is not None:
+        if request_error["status"] == "unsupported":
+            return result("request_unsupported", False, "请求超出当前移动和镜头控制能力，不能通过重写计划完成。")
+        return result("request_ambiguous", False, "原始请求不明确或时间不合法，请先澄清，不能由模型猜测修复。")
+    if _fallback(intent, original)["status"] != "ready":
+        return result("request_ambiguous", False, "请求与当前时间线存在歧义或冲突，请先澄清。")
+    if proposal is None:
+        return result("no_proposal", False, "请求通过控制输入契约检查，尚未提交模型提案。")
+    if isinstance(proposal, dict) and proposal.get("status") in ("clarify", "unsupported"):
+        return result("model_declined", False, "模型明确请求澄清或表示不支持；不自动改成可执行计划。")
+    if plan["status"] == "ready":
+        return result("accepted", False, "提案已通过控制输入检查，无需修订；这不代表生成画面达成目标。")
+
+    # These internal reasons are emitted by _validate_proposal. Keep public
+    # codes stable while avoiding raw exceptions, model prose or a full rule
+    # answer in the next model prompt. Unknown structural failures are safe to
+    # retry once only because the original request passed the preflight above.
+    reason = plan["explanation"].removeprefix("外部提案被拒绝：")
+    requested = set(intent.keys)
+    rows, patch_keys = None, None
+    try:
+        if isinstance(proposal, dict) and "edits" in proposal:
+            rows, patch = compile_edits(proposal["edits"], original)
+            patch_keys = {edit["key"] for edit in patch["edits"]}
+        elif isinstance(proposal, dict) and "action_segments" in proposal:
+            rows = expand_segments(proposal["action_segments"])
+    except (ValueError, TypeError):
+        pass
+
+    details = {}
+    if patch_keys is not None:
+        missing, extra = requested - patch_keys, patch_keys - requested
+        if intent.operation == "set":
+            active = set().union(*(set(row) for row in rows))
+            missing |= requested - active
+    elif rows is not None and intent.operation == "set":
+        actual = set().union(*(set(row) for row in rows))
+        missing = requested - actual
+        protected = (set(KEYS) - requested if intent.intervals is not None or intent.preserve_other
+                     else MOVEMENT_KEYS if intent.scope == "camera"
+                     else CAMERA_KEYS if intent.scope == "movement" else set())
+        retained = set().union(*(set(row) & protected for row in original)) if original else set()
+        extra = actual - requested - retained
+    else:
+        missing, extra = set(), set()
+    if missing:
+        details["missing_keys"] = [key for key in KEYS if key in missing]
+    if extra:
+        details["extra_keys"] = [key for key in KEYS if key in extra]
+
+    if reason == "proposal edit_scope differs from the requested scope":
+        return result("scope_mismatch", True, "编辑范围与用户请求不符，请重新核对移动、镜头和保留约束。", **details)
+    if reason in ("patch keys differ from requested directions",
+                  "proposal drops requested directions or introduces unrelated controls"):
+        if missing:
+            return result("missing_actions", True, "提案遗漏了用户明确要求的动作；请补齐并核对其他动作是否保留。", **details)
+        return result("unexpected_actions", True, "提案增加或编辑了用户未要求的动作，请移除越界修改。", **details)
+    if reason == "proposal does not match requested temporal order or intervals":
+        return result("timing_mismatch", True, "动作顺序或起止区间与原始请求不一致，请按用户原文重新核对。")
+    if reason in ("interval edit changes an unrelated control track",
+                  "proposal changes controls outside the requested edit_scope",
+                  "duration edit changes unrelated controls"):
+        protected = (set(KEYS) - requested if intent.operation != "set" or patch_keys is not None
+                     or intent.intervals is not None or intent.preserve_other
+                     else MOVEMENT_KEYS if intent.scope == "camera" else CAMERA_KEYS)
+        changed = ({key for key in protected
+                    if any((key in before) != (key in after)
+                           for before, after in zip(original, rows))}
+                   if original is not None and rows is not None else protected)
+        return result("protected_track_changed", True, "提案改变了要求保留的控制轨，请恢复基线中的对应输入。",
+                      protected_keys=[key for key in KEYS if key in changed])
+    if reason in ("proposal does not perform the requested duration edit",
+                  "proposal does not match the explicitly requested duration ratio"):
+        return result("duration_mismatch", True, "提案未执行要求的时长修改，请核对缩短、延长或取消的目标。")
+    structure_messages = {
+        "unknown proposal fields": "提案含有未约定字段或不是对象，请只提交约定的提案字段。",
+        "proposal requires edits or action_segments, and edit_scope": "提案缺少编辑范围或动作字段，请补全约定结构。",
+        "proposal cannot supply both edits and executable action_segments": "提案同时提交了两套可执行动作，请只使用一种动作格式。",
+        "invalid proposal status": "提案状态值不合法，请只使用约定状态。",
+        "invalid goals": "目标说明列表不合法，请核对列表长度和字符串字段。",
+        "invalid explanation": "解释字段不合法，请使用约定长度以内的字符串。",
+        "invalid planner_kind": "规划类型字段不合法，请使用约定长度以内的字符串。",
+        "invalid preserved flag": "保留标记必须为布尔值，实际保留结果仍由程序核对。",
+    }
+    return result("invalid_structure", True, structure_messages.get(
+        reason, "提案结构或字段不合法，请仅按约定格式重新提交，不要改变用户目标。"))

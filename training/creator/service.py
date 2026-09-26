@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from training.demo.contracts import require, write_json
 from training.demo.service import make_server as make_demo_server, QueueFullError
 from training.creator.planner import plan_request, expand_segments, KEYS
+from training.creator.providers import validated_planning_trace
 
 
 class CreatorService:
@@ -157,9 +158,23 @@ class CreatorService:
             self.operations[rid] = session['session_id']
         try:
             proposal = None
+            planning_trace = None
+            trace_unavailable = False
             if provider:
                 with self._model_slot():
-                    proposal = provider.plan(text, previous)
+                    if callable(getattr(provider, 'plan_with_trace', None)):
+                        result = provider.plan_with_trace(text, previous)
+                        require(isinstance(result, dict) and set(result) == {'proposal', 'planning_trace'},
+                                'invalid planning provider envelope')
+                        proposal = result['proposal']
+                        if result['planning_trace'] is not None:
+                            try:
+                                planning_trace = validated_planning_trace(result['planning_trace'])
+                            except (ValueError, TypeError):
+                                trace_unavailable = True
+                    else:
+                        proposal = provider.plan(text, previous)
+                    require(isinstance(proposal, dict), 'model planning requires a proposal object')
             plan = plan_request(text, previous=previous, proposal=proposal)
             with self.lock:
                 require((session['versions'][-1]['version_id'] if session['versions'] else None) == head, 'plan changed while model was working; submit your edit again')
@@ -169,6 +184,8 @@ class CreatorService:
                     text=text, plan=plan, job_id=None, review=None, created_at=time.time(), request_id=rid,
                     root_request=vid, automatic_revisions=0, origin='user',
                     planner_kind=planner,
+                    **({'planning_trace': planning_trace} if planning_trace is not None else {}),
+                    **({'planning_trace_unavailable': True} if trace_unavailable else {}),
                     provider=getattr(provider, 'name', 'local_model_command') if provider else 'rule_fallback'))
                 self._save(session)
                 result = self.snapshot(session)

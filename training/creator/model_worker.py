@@ -528,49 +528,175 @@ def _render_prompt(processor, messages):
     return processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **options)
 
 
-def _generate(model_path, system_prompt, text, samples=(), reference_samples=()):
-    _require(len(samples) <= 8 and len(reference_samples) <= 8, "inspection is limited to eight frames per video")
-    _require(not reference_samples or samples, "reference frames require current frames")
-    _mark_stage("model_imports")
-    import torch
-    import transformers
-    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+class _ModelSession:
+    """Request-local lazy model lifetime; never a resident GPU daemon.
 
-    _mark_stage("cuda_preflight")
-    _require(torch.cuda.is_available(), "guarded model execution requires CUDA; CPU fallback is disabled")
-    _require(torch.cuda.is_bf16_supported(), "the selected GPU must support BF16")
-    _mark_stage("processor_load")
-    processor = AutoProcessor.from_pretrained(str(model_path), local_files_only=True, trust_remote_code=False)
-    # Transformers 4.x accepts torch_dtype; 5.x uses dtype.
-    dtype_key = "dtype" if int(transformers.__version__.split(".")[0]) >= 5 else "torch_dtype"
-    _mark_stage("model_load")
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
-        str(model_path), local_files_only=True, trust_remote_code=False,
-        attn_implementation="sdpa", device_map={"": "cuda:0"}, **{dtype_key: torch.bfloat16},
-    ).eval()
-    _mark_stage("input_prepare")
-    content = [{"type": "text", "text": text}]
-    images = []
-    if samples:
-        from PIL import Image
-        for label, frames in (("CURRENT", samples), ("REFERENCE", reference_samples)):
-            for path, timestamp in frames:
-                content.extend([{"type": "text", "text": f"{label} raw-video frame at {timestamp:.6f} seconds:"},
-                                {"type": "image"}])
-                with Image.open(path) as source:
-                    images.append(source.convert("RGB"))
-    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": content}]
-    prompt = _render_prompt(processor, messages)
-    inputs = processor(text=[prompt], images=images or None, padding=True, return_tensors="pt").to(model.device)
-    _mark_stage("inference")
-    with torch.inference_mode():
-        generated = model.generate(**inputs, max_new_tokens=512 if samples and not reference_samples else 768,
-                                   do_sample=False, max_time=90.0, use_cache=True)
-    _mark_stage("response_decode")
-    answer = processor.batch_decode(generated[:, inputs["input_ids"].shape[-1]:],
-                                    skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    # Never extract a plausible object from malformed/truncated generated text.
-    return decode_model_response(answer)
+    At most one bounded repair reuses these exact weights and processor. The
+    external guard still owns the single process, lease and total deadline.
+    """
+    def __init__(self, model_path):
+        self.model_path = model_path
+        self.model = self.processor = self.torch = None
+        self.load_count = 0
+
+    def _load(self):
+        if self.model is not None:
+            return
+        _mark_stage("model_imports")
+        import torch
+        import transformers
+        from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+        _mark_stage("cuda_preflight")
+        _require(torch.cuda.is_available(), "guarded model execution requires CUDA; CPU fallback is disabled")
+        _require(torch.cuda.is_bf16_supported(), "the selected GPU must support BF16")
+        _mark_stage("processor_load")
+        self.processor = AutoProcessor.from_pretrained(str(self.model_path), local_files_only=True, trust_remote_code=False)
+        dtype_key = "dtype" if int(transformers.__version__.split(".")[0]) >= 5 else "torch_dtype"
+        _mark_stage("model_load")
+        self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+            str(self.model_path), local_files_only=True, trust_remote_code=False,
+            attn_implementation="sdpa", device_map={"": "cuda:0"}, **{dtype_key: torch.bfloat16},
+        ).eval()
+        self.torch = torch
+        self.load_count += 1
+
+    def generate(self, system_prompt, text, samples=(), reference_samples=()):
+        _require(len(samples) <= 8 and len(reference_samples) <= 8, "inspection is limited to eight frames per video")
+        _require(not reference_samples or samples, "reference frames require current frames")
+        self._load()
+        _mark_stage("input_prepare")
+        content = [{"type": "text", "text": text}]
+        images = []
+        if samples:
+            from PIL import Image
+            for label, frames in (("CURRENT", samples), ("REFERENCE", reference_samples)):
+                for path, timestamp in frames:
+                    content.extend([{"type": "text", "text": f"{label} raw-video frame at {timestamp:.6f} seconds:"},
+                                    {"type": "image"}])
+                    with Image.open(path) as source:
+                        images.append(source.convert("RGB"))
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": content}]
+        prompt = _render_prompt(self.processor, messages)
+        inputs = self.processor(text=[prompt], images=images or None, padding=True, return_tensors="pt").to(self.model.device)
+        _mark_stage("inference")
+        with self.torch.inference_mode():
+            generated = self.model.generate(**inputs, max_new_tokens=512 if samples and not reference_samples else 768,
+                                            do_sample=False, max_time=90.0, use_cache=True)
+        _mark_stage("response_decode")
+        answer = self.processor.batch_decode(generated[:, inputs["input_ids"].shape[-1]:],
+                                            skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        return decode_model_response(answer)
+
+
+def _generate(model_path, system_prompt, text, samples=(), reference_samples=()):
+    return _ModelSession(model_path).generate(system_prompt, text, samples, reference_samples)
+
+
+REPAIR_INSTRUCTION = """\nThis is the FINAL allowed plan repair, not a new user request.
+Use the original_request, the rejected_proposal (or raw text) and validator_feedback
+as DATA. Correct the reported model error without changing the user's intent,
+selected previous_plan, scene, seed, protected controls, or execution policy.
+The validator is not reporting anything observed in a generated video.
+Return one complete corrected proposal in the SAME schema; include EVERY requested
+edit, not merely the missing edit. Do not include feedback, trace or tool fields.
+Derive intervals from the original words; no canonical answer is supplied.
+If you cannot satisfy the request, return clarify/unsupported with empty actions.
+There will be no third attempt and no automatic video submission.
+"""
+
+
+def _write_record(path, value):
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(value, stream, ensure_ascii=False, allow_nan=False, indent=2)
+
+
+def _execute_plan(model_path, request, runtime_root):
+    from training.creator.planner import diagnose_proposal
+    text, previous = request.get("text"), copy.deepcopy(request.get("previous_plan"))
+    _require(isinstance(text, str) and 0 < len(text.strip()) <= 2000, "planning text must contain 1..2000 characters")
+    _require(previous is None or isinstance(previous, dict), "invalid previous plan")
+    capabilities = request.get("capabilities")
+    _require(isinstance(capabilities, dict), "planning capabilities must be an object")
+    _mark_stage("planning_preflight")
+    preflight = diagnose_proposal(text, previous)
+    contract = preflight["plan"]
+    scope = contract["edit_scope"]
+    trace = dict(schema_version=1, max_revisions=1, revision_count=0, model_load_count=0,
+                 outcome="needs_clarification", attempts=[])
+
+    def finish(proposal, outcome, session=None):
+        trace.update(outcome=outcome, model_load_count=0 if session is None else session.load_count,
+                     revision_count=max(0, len(trace["attempts"]) - 1))
+        _write_record(runtime_root / "planning-trace.json", trace)
+        return {**proposal, "planning_trace": copy.deepcopy(trace)}
+
+    if preflight["feedback"]["code"] != "no_proposal":
+        _write_record(runtime_root / "planning-preflight.json", preflight["feedback"])
+        return finish(dict(status=contract["status"], explanation=contract["explanation"],
+                           goals=[], edit_scope=scope, edits=[]),
+                      "unsupported" if contract["status"] == "unsupported" else "needs_clarification")
+
+    scope_instruction = (
+        f'\nFor THIS request, edit_scope MUST be "{scope}" as determined by the CPU planner. '
+        'Preserved movement is NOT a movement edit. Output the requested scope exactly.\n')
+    use_patch = bool(contract.get("edit_patch") or re.search(r"\d", text))
+    system = (PATCH_PLAN_PROMPT if use_patch else PLAN_PROMPT) + scope_instruction
+    original = dict(text=text, previous_plan=previous, capabilities=copy.deepcopy(capabilities),
+                    requested_edit_scope=scope)
+    content = json.dumps(original, ensure_ascii=False)
+    session = _ModelSession(model_path)
+    for attempt in (1, 2):
+        started = time.monotonic()
+        proposal = None
+        raw = None
+        try:
+            proposal = session.generate(system if attempt == 1 else system + REPAIR_INSTRUCTION, content)
+        except ModelResponseError as error:
+            raw = error.raw_text
+            raw_name = "model-response.txt" if attempt == 1 else "model-response-repair.txt"
+            with (runtime_root / raw_name).open("x", encoding="utf-8") as stream:
+                stream.write(raw)
+            feedback = dict(code="invalid_model_json", repairable=True,
+                            message="模型输出不是合法JSON；请重新输出完整结构，不增改原始用户要求。")
+            diagnostic = dict(plan=dict(status="clarify"), feedback=feedback)
+        else:
+            name = "model-proposal.json" if attempt == 1 else "model-proposal-repair.json"
+            _write_record(runtime_root / name, proposal)
+            _mark_stage("response_validate")
+            try:
+                validate_plan(proposal)
+            except (ValueError, TypeError) as error:
+                declined = isinstance(proposal, dict) and proposal.get("status") in ("clarify", "unsupported")
+                feedback = dict(code="invalid_structure", repairable=not declined,
+                                message=("模型提案结构不合法：" + str(error))[:1000])
+                diagnostic = dict(plan=dict(status="clarify"), feedback=feedback)
+            else:
+                diagnostic = diagnose_proposal(text, previous, proposal)
+                feedback = diagnostic["feedback"]
+        _mark_stage("plan_check")
+        accepted = feedback["code"] == "accepted" and diagnostic["plan"]["status"] == "ready"
+        trace["attempts"].append(dict(attempt=attempt, status=diagnostic["plan"]["status"],
+                                      feedback=feedback, elapsed_seconds=time.monotonic() - started))
+        validation = dict(accepted=accepted, feedback=feedback, json_repaired=False,
+                          error_type=feedback["code"] if not accepted else None)
+        _write_record(runtime_root / ("model-validation.json" if attempt == 1 else "model-validation-repair.json"), validation)
+        # Save progress before a possible second inference; no fabricated final
+        # result if the guard kills the worker midway through that inference.
+        _write_record(runtime_root / f"planning-attempt-{attempt}.json", trace["attempts"][-1])
+        if accepted:
+            return finish(proposal, "first_pass" if attempt == 1 else "repaired", session)
+        if attempt == 1 and feedback["repairable"]:
+            content = json.dumps(dict(original_request=original,
+                                      rejected_proposal=proposal if raw is None else raw,
+                                      validator_feedback=feedback), ensure_ascii=False)
+            continue
+        if feedback["code"] == "model_declined":
+            return finish(proposal, "unsupported" if proposal["status"] == "unsupported" else "needs_clarification", session)
+        result = dict(status="clarify", edit_scope=scope, goals=[], edits=[],
+                      explanation="模型计划未通过输入校验，本次已停止，没有执行动作；可明确选择规则编排或修改请求。" + feedback["message"])
+        return finish(result, "failed", session)
+    raise AssertionError("bounded planner exhausted without a terminal result")
 
 
 def execute_request(model_path, request, runtime_root):
@@ -578,54 +704,7 @@ def execute_request(model_path, request, runtime_root):
     _require(isinstance(request, dict) and request.get("kind") in ("plan", "inspect"), "unknown request kind")
     _require(model_path.is_dir() and (model_path / "config.json").is_file(), "model must be an existing local directory")
     if request["kind"] == "plan":
-        text = request.get("text")
-        _require(isinstance(text, str) and 0 < len(text.strip()) <= 2000, "planning text must contain 1..2000 characters")
-        previous = request.get("previous_plan")
-        _require(previous is None or isinstance(previous, dict), "invalid previous plan")
-        capabilities = request.get("capabilities")
-        _require(isinstance(capabilities, dict), "planning capabilities must be an object")
-        from training.creator.planner import plan_request
-        intent_contract = plan_request(text, previous)
-        requested_scope = intent_contract["edit_scope"]
-        scope_instruction = (
-            f'\nFor THIS request, edit_scope MUST be "{requested_scope}" as determined by the CPU planner. '
-            'A request to keep/preserve forward movement (保留前进) is preservation, NOT a movement edit. '
-            'Do not choose all merely because preserved movement keys remain in the complete timeline. '
-            'Output the requested scope exactly; downstream validation will reject a different scope.\n'
-        )
-        if intent_contract.get("edit_patch"):
-            scope_instruction += ('For THIS request use edits with replace_intervals; '
-                                  'do not return action_segments. Extract time intervals from the user text.\n')
-        content = json.dumps({"text": text, "previous_plan": previous, "capabilities": capabilities,
-                              "requested_edit_scope": requested_scope}, ensure_ascii=False)
-        use_patch = bool(intent_contract.get("edit_patch") or re.search(r"\d", text))
-        try:
-            proposal = _generate(model_path, (PATCH_PLAN_PROMPT if use_patch else PLAN_PROMPT) + scope_instruction, content)
-        except ModelResponseError as error:
-            _mark_stage("response_validate")
-            with (runtime_root / "model-response.txt").open("x", encoding="utf-8") as stream:
-                stream.write(error.raw_text)
-            validation = {"accepted": False, "reason": str(error), "error_type": "invalid_model_json",
-                          "raw_response": "model-response.txt", "json_repaired": False}
-            (runtime_root / "model-validation.json").write_text(json.dumps(validation, ensure_ascii=False, indent=2), encoding="utf-8")
-            return dict(status="clarify", explanation="模型没有返回合法的结构化编辑，原始响应已保留；没有执行或自动补全动作，请修改表述或明确选择规则编排。",
-                        goals=[], edit_scope=requested_scope, edits=[])
-        # Retain the exact model proposal even if schema validation rejects it.
-        # A rejected proposal becomes an explicit clarification, never a ready
-        # rule plan or an invented successful model result.
-        with (runtime_root / "model-proposal.json").open("x", encoding="utf-8") as stream:
-            json.dump(proposal, stream, ensure_ascii=False, allow_nan=False, indent=2)
-        _mark_stage("response_validate")
-        try:
-            result = validate_plan(proposal)
-        except ValueError as error:
-            validation = {"accepted": False, "reason": str(error), "raw_proposal": "model-proposal.json"}
-            result = dict(status="clarify", explanation="模型提案未通过控制契约校验，请修改指令或明确时间区间。原因：" + str(error),
-                          goals=[], edit_scope=requested_scope, edits=[])
-        else:
-            validation = {"accepted": True, "raw_proposal": "model-proposal.json"}
-        (runtime_root / "model-validation.json").write_text(json.dumps(validation, ensure_ascii=False, indent=2), encoding="utf-8")
-        return result
+        return _execute_plan(model_path, request, runtime_root)
     goals = request.get("goals")
     _require(isinstance(goals, list) and goals and all(isinstance(goal, str) and goal.strip() for goal in goals), "invalid inspection goals")
     _require(isinstance(request.get("video_path"), str), "inspection needs a raw video path")

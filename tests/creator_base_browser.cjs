@@ -39,6 +39,10 @@ const second = {session_id:'other-test',scene_id:'test-scene',seed:43,
         if(pathname==='/api/plan'){
           assert.equal(body.base_version_id,'v-a');
           const result={...version('v-planned',5,['W'],false),base_version_id:'v-a',parent_version:'v-a',
+            planning_trace:{schema_version:1,max_revisions:1,model_load_count:1,revision_count:1,outcome:'repaired',
+              attempts:[{attempt:1,status:'clarify',elapsed_seconds:1.2,
+                feedback:{code:'missing_actions',repairable:true,message:'<img src=x onerror="globalThis.traceInjected=true">'}},
+                {attempt:2,status:'ready',elapsed_seconds:1.3,feedback:{code:'ok',repairable:false,message:'TEST input check passed'}}]},
             plan:{...plan(['W']),edit_scope:'camera',preserved:true,edit_patch:{schema_version:1,fps:16,
               total_frames:240,edits:[{op:'replace_intervals',key:'I',intervals:[{start_seconds:8,end_seconds:10}]}],
               protected_keys:['W','A','S','D','J','K','L']}}};
@@ -117,6 +121,17 @@ const second = {session_id:'other-test',scene_id:'test-scene',seed:43,
     assert.match(await page.locator('#plan-details').innerText(),/实际编辑基线\s*v-a/);
     assert.match(await page.locator('#plan-details').innerText(),/replace_intervals/);
     assert.doesNotMatch(await page.locator('#plan-details').innerText(),/v-newer/);
+    const trace=page.locator('#plan-trace');
+    assert.match(await trace.innerText(),/初次检查/);
+    assert.match(await trace.innerText(),/一次修订检查/);
+    assert.match(await trace.innerText(),/服务端最终计划：可执行/);
+    assert.match(await trace.innerText(),/不是视频效果/);
+    assert.match(await trace.innerText(),/<img src=x/);
+    assert.equal(await trace.locator('img').count(),0);
+    assert.equal(await page.evaluate(()=>globalThis.traceInjected===undefined),true);
+    await page.locator('#compare-right').selectOption('v-planned');
+    assert.match(await page.locator('[data-version-id="v-planned"] .planning-trace').innerText(),/一次修订检查/);
+    assert.equal(posts.length,1);
     await page.evaluate(()=>refresh());
     await page.reload();
     await page.waitForFunction(()=>document.querySelector('#plan-details').textContent.includes('v-planne'));
@@ -134,6 +149,7 @@ const second = {session_id:'other-test',scene_id:'test-scene',seed:43,
         'session switch and new session do not leak baseline IDs','historical edit button chooses that exact version',
         'historical edit creates no API POST','manual draft survives polling','plan sends displayed base_version_id',
         'planned_version_id controls preview across polling/reload','explicit generation payload uses displayed planned version',
+        'repair trace appears in plan and version card without auto generation','feedback HTML remains text; no XSS execution',
         'all requests intercepted; no real API/model/GPU invocation'],posts:posts.map(p=>({path:p.pathname,
           base_version_id:p.body.base_version_id,version_id:p.body.version_id})),errors,leakedRequests}));
   }finally{await browser.close()}

@@ -87,17 +87,27 @@ def test_valid_patch_structure_is_not_evidence_of_user_intent_match():
     assert plan_request('保持前进不变，只在第8到10秒抬头', previous, proposal)['status'] == 'clarify'
 
 
-def test_invalid_model_time_returns_explicit_clarification_and_keeps_original(tmp_path, monkeypatch):
+def _stub_planner_session(monkeypatch, worker, callback):
+    class Session:
+        load_count = 0
+        def __init__(self, model_path):
+            self.path = model_path
+        def generate(self, system, content):
+            self.load_count = 1  # Explicit test double, not a GPU observation.
+            return callback(self.path, system, content)
+    monkeypatch.setattr(worker, '_ModelSession', Session)
+
+
+def test_invalid_user_time_is_clarified_before_model_loading(tmp_path, monkeypatch):
     from training.creator import model_worker as worker
     (tmp_path / 'config.json').write_text('{}')
-    proposal = _patch(0.1, 1)
-    monkeypatch.setattr(worker, '_generate', lambda *args: proposal)
+    _stub_planner_session(monkeypatch, worker, lambda *args: pytest.fail('invalid user time must not call model'))
     result = worker.execute_request(tmp_path, dict(kind='plan', text='第0.1到1秒抬头',
                                                   previous_plan=None, capabilities={}), tmp_path)
     assert result['status'] == 'clarify' and result['edits'] == []
-    assert '未通过' in result['explanation']
-    assert json.loads((tmp_path / 'model-proposal.json').read_text(encoding='utf-8')) == proposal
-    assert json.loads((tmp_path / 'model-validation.json').read_text(encoding='utf-8'))['accepted'] is False
+    assert result['planning_trace']['attempts'] == [] and result['planning_trace']['model_load_count'] == 0
+    assert not (tmp_path / 'model-proposal.json').exists()
+    assert json.loads((tmp_path / 'planning-preflight.json').read_text(encoding='utf-8'))['repairable'] is False
 
 
 def test_numeric_new_plan_uses_patch_only_prompt_and_keeps_all_scope(tmp_path, monkeypatch):
@@ -107,10 +117,11 @@ def test_numeric_new_plan_uses_patch_only_prompt_and_keeps_all_scope(tmp_path, m
     proposal = dict(status='ready', explanation='先右移，再镜头低头。', goals=['输入右移和镜头低头'], edit_scope='all',
                     edits=[dict(op='replace_intervals', key='D', intervals=[dict(start_seconds=0, end_seconds=4)]),
                            dict(op='replace_intervals', key='K', intervals=[dict(start_seconds=4, end_seconds=6)])])
-    monkeypatch.setattr(worker, '_generate', lambda p, s, c: seen.append((s,c)) or proposal)
+    _stub_planner_session(monkeypatch, worker, lambda p, s, c: seen.append((s,c)) or proposal)
     result = worker.execute_request(tmp_path, dict(kind='plan', text='前4秒向右移动，然后低头2秒',
                                                   previous_plan=None, capabilities={}), tmp_path)
-    assert result == proposal and 'EVERY requested action' in seen[0][0]
+    assert {k:v for k,v in result.items() if k != 'planning_trace'} == proposal and 'EVERY requested action' in seen[0][0]
+    assert result['planning_trace']['outcome'] == 'first_pass' and len(seen) == 1
     assert worker._read_json(seen[0][1])['requested_edit_scope'] == 'all'
 
 
@@ -120,13 +131,15 @@ def test_malformed_model_json_is_not_repaired_or_promoted_to_success(tmp_path, m
     raw = ' {"status":"ready","edits":[  '
     def malformed(*args):
         return worker.decode_model_response(raw)
-    monkeypatch.setattr(worker, '_generate', malformed)
+    _stub_planner_session(monkeypatch, worker, malformed)
     result = worker.execute_request(tmp_path, dict(kind='plan', text='前4秒向右移动，然后低头2秒',
                                                   previous_plan=None, capabilities={}), tmp_path)
     assert result['status'] == 'clarify' and result['edits'] == [] and result['edit_scope'] == 'all'
     assert (tmp_path / 'model-response.txt').read_text(encoding='utf-8') == raw
     validation = json.loads((tmp_path / 'model-validation.json').read_text(encoding='utf-8'))
     assert validation['error_type'] == 'invalid_model_json' and validation['json_repaired'] is False
+    assert (tmp_path / 'model-response-repair.txt').read_text(encoding='utf-8') == raw
+    assert result['planning_trace']['outcome'] == 'failed' and result['planning_trace']['revision_count'] == 1
 
 
 @pytest.mark.parametrize('template,expected', [
@@ -149,9 +162,11 @@ def test_dynamic_camera_scope_is_prompted_without_repairing_model_output(tmp_pat
     (tmp_path / 'config.json').write_text('{}')
     previous = plan_request('一直前进，后半段抬头')
     seen = []
-    monkeypatch.setattr(worker, '_generate', lambda p, s, c: seen.append((s, c)) or _proposal(previous['action_segments']))
+    _stub_planner_session(monkeypatch, worker, lambda p, s, c: seen.append((s, c)) or _proposal(previous['action_segments']))
     result = worker.execute_request(tmp_path, dict(kind='plan', text='保留前进，只缩短抬头', previous_plan=previous, capabilities={}), tmp_path)
-    assert worker._read_json(seen[0][1])['requested_edit_scope'] == 'camera' and 'MUST be "camera"' in seen[0][0] and result['edit_scope'] == 'all'
+    assert worker._read_json(seen[0][1])['requested_edit_scope'] == 'camera' and 'MUST be "camera"' in seen[0][0]
+    assert len(seen) == 2 and result['status'] == 'clarify' and result['planning_trace']['outcome'] == 'failed'
+    assert json.loads((tmp_path/'model-proposal.json').read_text(encoding='utf-8'))['edit_scope'] == 'all'
 
 
 def _judgment(observations, *, verdict='satisfied'):
@@ -291,9 +306,10 @@ def test_explicit_half_and_half_more_proposals_follow_extension_policy():
         previous = result
 
 
-def _install_cpu_model_fixtures(monkeypatch, worker, runtime, *, fail_at=None):
+def _install_cpu_model_fixtures(monkeypatch, worker, runtime, *, fail_at=None, responses=None):
     """Instrumented CPU test doubles, never evidence of real model inference."""
     seen = []
+    responses = iter(responses or [_proposal([dict(frames=240, keys=['W'])])])
     def observe(stage):
         snapshot = json.loads((runtime / 'model-progress.json').read_text(encoding='utf-8'))
         assert snapshot['status'] == 'running' and snapshot['active_stage'] == stage
@@ -316,7 +332,7 @@ def _install_cpu_model_fixtures(monkeypatch, worker, runtime, *, fail_at=None):
             return Inputs(input_ids=SimpleNamespace(shape=(1, 1)))
         def batch_decode(self, *args, **kwargs):
             observe('response_decode')
-            return [json.dumps(_proposal([dict(frames=240, keys=['W'])]))]
+            return [json.dumps(next(responses))]
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
             observe('processor_load')
@@ -370,6 +386,19 @@ def test_worker_records_stage_before_work_and_retains_legacy_success_metrics(tmp
     assert all(seconds >= 0 for seconds in metrics['stage_seconds'].values())
     assert metrics['stage_timing_kind'] == 'host_wall_clock_no_cuda_synchronization'
     assert worker._PROGRESS.get() is None
+
+
+def test_two_planning_inferences_reuse_exactly_one_model_load(tmp_path, monkeypatch):
+    from training.creator import model_worker as worker
+    bad = _proposal([dict(frames=240, keys=['D'])])
+    good = _proposal([dict(frames=240, keys=['W'])])
+    seen = _install_cpu_model_fixtures(monkeypatch, worker, tmp_path, responses=[bad, good])
+    assert worker.main(_worker_cli(tmp_path)) == 0
+    result = json.loads((tmp_path/'response.json').read_text(encoding='utf-8'))
+    assert result['planning_trace']['outcome'] == 'repaired'
+    assert seen.count('processor_load') == seen.count('model_load') == 1
+    assert seen.count('inference') == seen.count('response_decode') == 2
+    assert result['planning_trace']['model_load_count'] == 1
 
 
 @pytest.mark.parametrize('failure_stage', ['model_load', 'inference'])

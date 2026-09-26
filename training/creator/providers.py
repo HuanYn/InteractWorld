@@ -7,6 +7,7 @@ response and diagnostic files are retained below ``runtime_root`` for auditing.
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -30,6 +31,66 @@ CAPABILITIES = {
 
 class ProviderError(RuntimeError):
     """The real provider failed; no synthetic plan or assessment is substituted."""
+
+
+def validated_planning_trace(value):
+    """Copy bounded worker observations, never use them as execution authority.
+
+    A malformed trace can be omitted by the service without changing the
+    independent plan validation. No arbitrary model metadata is persisted.
+    """
+    if not isinstance(value, dict) or set(value) != {
+        'schema_version', 'max_revisions', 'model_load_count', 'outcome',
+        'attempts', 'revision_count',
+    }:
+        raise ValueError('invalid planning trace fields')
+    for key, minimum, maximum in [('schema_version', 1, 1), ('max_revisions', 1, 1),
+                                  ('model_load_count', 0, 1), ('revision_count', 0, 1)]:
+        if type(value[key]) is not int or not minimum <= value[key] <= maximum:
+            raise ValueError('invalid planning trace integer')
+    if value['outcome'] not in ('first_pass', 'repaired', 'failed', 'needs_clarification', 'unsupported'):
+        raise ValueError('invalid planning trace outcome')
+    attempts = value['attempts']
+    if not isinstance(attempts, list) or not 0 <= len(attempts) <= 2:
+        raise ValueError('invalid planning trace attempts')
+    if value['revision_count'] != max(0, len(attempts) - 1):
+        raise ValueError('planning trace revision count differs from attempts')
+    if value['model_load_count'] != int(bool(attempts)):
+        raise ValueError('planning trace model load count differs from attempts')
+    clean_attempts = []
+    for number, attempt in enumerate(attempts, 1):
+        if not isinstance(attempt, dict) or set(attempt) != {'attempt', 'status', 'feedback', 'elapsed_seconds'}:
+            raise ValueError('invalid planning attempt fields')
+        if type(attempt['attempt']) is not int or attempt['attempt'] != number:
+            raise ValueError('invalid planning attempt number')
+        if attempt['status'] not in ('ready', 'clarify', 'unsupported'):
+            raise ValueError('invalid planning attempt status')
+        elapsed = attempt['elapsed_seconds']
+        if type(elapsed) not in (float, int) or not math.isfinite(elapsed) or not 0 <= elapsed <= 3600:
+            raise ValueError('invalid planning attempt elapsed time')
+        feedback = attempt['feedback']
+        if not isinstance(feedback, dict) or not {'code', 'repairable', 'message'} <= set(feedback) \
+                or set(feedback) - {'code', 'repairable', 'message', 'missing_keys', 'extra_keys', 'protected_keys'}:
+            raise ValueError('invalid planning feedback fields')
+        if not isinstance(feedback['code'], str) or not 1 <= len(feedback['code']) <= 80 \
+                or not all(char.isascii() and (char.isalnum() or char == '_') for char in feedback['code']):
+            raise ValueError('invalid planning feedback code')
+        if type(feedback['repairable']) is not bool or not isinstance(feedback['message'], str) \
+                or len(feedback['message']) > 2000 or '\x00' in feedback['message']:
+            raise ValueError('invalid planning feedback message')
+        for key in ('missing_keys', 'extra_keys', 'protected_keys'):
+            if key in feedback and (not isinstance(feedback[key], list) or len(feedback[key]) > 8
+                    or any(not isinstance(control, str) or control not in tuple('WASDIJKL')
+                           for control in feedback[key]) or len(set(feedback[key])) != len(feedback[key])):
+                raise ValueError('invalid planning feedback controls')
+        clean_attempts.append({**attempt, 'feedback': {**feedback,
+            **{key: list(feedback[key]) for key in ('missing_keys', 'extra_keys', 'protected_keys')
+               if key in feedback}}})
+    if value['outcome'] == 'repaired' and len(attempts) != 2:
+        raise ValueError('repaired outcome requires two attempts')
+    if value['outcome'] == 'first_pass' and len(attempts) != 1:
+        raise ValueError('first pass outcome requires one attempt')
+    return {**value, 'attempts': clean_attempts}
 
 
 def _reject_constant(value):
@@ -133,12 +194,18 @@ class CommandProvider:
                 _terminate_owned_group(process)
 
     def plan(self, text, previous=None):
+        # Legacy visual-revision consumers require proposal fields only.
+        return self.plan_with_trace(text, previous)['proposal']
+
+    def plan_with_trace(self, text, previous=None):
         if not isinstance(text, str) or not text.strip():
             raise ValueError("planning text must be non-empty")
         if previous is not None and not isinstance(previous, dict):
             raise ValueError("previous plan must be an object or null")
-        return self._call({"kind": "plan", "text": text, "previous_plan": previous,
-                           "capabilities": CAPABILITIES})
+        response = self._call({"kind": "plan", "text": text, "previous_plan": previous,
+                               "capabilities": CAPABILITIES})
+        return {'proposal': {key: value for key, value in response.items() if key != 'planning_trace'},
+                'planning_trace': response.get('planning_trace')}
 
     def inspect(self, video_path, goals, *, reference_video_path=None):
         path = Path(video_path).resolve()

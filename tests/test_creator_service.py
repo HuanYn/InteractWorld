@@ -77,6 +77,74 @@ def make_plan(service, **changes):
     return service.plan(payload)
 
 
+def planning_trace_fixture():
+    return dict(schema_version=1, max_revisions=1, model_load_count=1, outcome='repaired',
+        revision_count=1, attempts=[
+            dict(attempt=1, status='clarify', elapsed_seconds=1,
+                 feedback=dict(code='missing_actions', repairable=True, message='Missing I', missing_keys=['I'])),
+            dict(attempt=2, status='ready', elapsed_seconds=1,
+                 feedback=dict(code='ok', repairable=False, message='Input check passed'))])
+
+
+def test_trace_provider_persists_one_version_and_does_not_generate(service):
+    calls = []
+    trace = planning_trace_fixture()
+    def traced(text, previous):
+        calls.append((text, previous))
+        return dict(proposal=plan_request(text, previous=previous), planning_trace=trace)
+    service.provider.plan_with_trace = traced
+    result = make_plan(service)
+    assert len(result['versions']) == 1
+    assert result['versions'][0]['planning_trace'] == trace
+    assert result['versions'][0]['plan']['status'] == 'ready'
+    assert not service.provider.plans and not service.demo.submitted
+    assert len(calls) == 1
+    assert make_plan(service) == result
+    assert len(calls) == 1
+    reloaded = CreatorService(service.demo, provider=service.provider)
+    assert reloaded.list_sessions()[0]['versions'][0]['planning_trace'] == trace
+
+
+def test_ready_trace_cannot_override_independent_final_plan_validation(service):
+    service.provider.plan_with_trace = lambda text, previous: dict(
+        proposal=dict(status='ready', edit_scope='all', explanation='Wrong model output',
+                      action_segments=[dict(frames=240, keys=['W'])]),
+        planning_trace=planning_trace_fixture())
+    result = make_plan(service)
+    version = result['versions'][0]
+    assert version['planning_trace']['outcome'] == 'repaired'
+    assert version['plan']['status'] == 'clarify'
+    with pytest.raises(ValueError, match='clarify'):
+        service.generate(dict(session_id=result['session_id'], version_id=version['version_id']))
+    assert not service.demo.submitted
+
+
+def test_invalid_trace_is_labelled_unavailable_not_persisted_as_trusted_metadata(service):
+    service.provider.plan_with_trace = lambda text, previous: dict(
+        proposal=plan_request(text, previous=previous),
+        planning_trace={**planning_trace_fixture(), 'attempts': [{}] * 100})
+    version = make_plan(service)['versions'][0]
+    assert version['plan']['status'] == 'ready'
+    assert version['planning_trace_unavailable'] is True
+    assert 'planning_trace' not in version
+
+
+def test_legacy_provider_has_no_synthetic_trace(service):
+    version = make_plan(service)['versions'][0]
+    assert version['plan']['status'] == 'ready'
+    assert 'planning_trace' not in version and 'planning_trace_unavailable' not in version
+    assert len(service.provider.plans) == 1
+
+
+def test_missing_proposal_does_not_trigger_silent_rule_fallback(service):
+    service.provider.plan_with_trace = lambda text, previous: dict(proposal=None,
+        planning_trace=planning_trace_fixture())
+    with pytest.raises(ValueError, match='proposal object'):
+        make_plan(service)
+    assert all(not session['versions'] for session in service.sessions.values())
+    assert not service.operations and not service.demo.submitted
+
+
 def test_visual_revision_defaults_off_and_preserves_raw_model_recommendation(tmp_path):
     service = CreatorService(UnitTestQueue(tmp_path), provider=UnitTestProvider())
     session = complete(service, make_plan(service))

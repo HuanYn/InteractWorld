@@ -189,3 +189,44 @@ def test_planned_version_response_controls_preview_and_survives_polling():
     assert 'actual-parent' in result[1]
     assert 'replace_intervals' in result[1]
     assert 'start_seconds' in result[1]
+
+
+def test_planning_trace_text_is_bounded_plain_text_and_does_not_assert_visual_success():
+    injection = '<img src=x onerror="globalThis.traceInjected=true">'
+    trace = dict(schema_version=1, max_revisions=1, model_load_count=1, revision_count=1,
+        outcome='repaired', attempts=[
+            dict(attempt=1, status='clarify', elapsed_seconds=1.2,
+                feedback=dict(code='missing_actions', repairable=True, message=injection)),
+            dict(attempt=2, status='ready', elapsed_seconds=1.3,
+                feedback=dict(code='ok', repairable=False, message='Input check passed'))])
+    version = dict(plan=dict(status='clarify'), planning_trace=trace)
+    result = browser_helper(
+        'let calls=0;api=()=>{calls++;};const box=el("div");renderPlanningTrace(box,' + json.dumps(version) + ');'
+        'const walk=node=>[node.textContent,...node.childNodes.flatMap(walk)];'
+        '[walk(box).join(" "),box.childNodes.every(node=>node.innerHTML===undefined),'
+        'globalThis.traceInjected===undefined,calls]'
+    )
+    assert '初次检查' in result[0] and '一次修订检查' in result[0]
+    assert injection in result[0]
+    assert '服务端最终计划：不可执行' in result[0]
+    assert '不是视频效果' in result[0]
+    assert result[1:] == [True, True, 0]
+
+
+def test_failed_planning_trace_is_not_labelled_user_ambiguity_and_legacy_is_hidden():
+    trace = dict(schema_version=1, max_revisions=1, model_load_count=1, revision_count=1,
+        outcome='failed', attempts=[dict(attempt=i, status='clarify', elapsed_seconds=1,
+            feedback=dict(code='missing_actions', repairable=True, message='Missing requested action'))
+            for i in (1, 2)])
+    version = dict(plan=dict(status='clarify'), planning_trace=trace)
+    result = browser_helper(
+        'const box=el("div"),old=el("div"),missing=el("div");renderPlanningTrace(box,' + json.dumps(version) + ');'
+        'renderPlanningTrace(old,{plan:{status:"ready"}});'
+        'renderPlanningTrace(missing,{plan:{status:"ready"},planning_trace_unavailable:true});'
+        'const walk=node=>[node.textContent,...node.childNodes.flatMap(walk)];'
+        '[walk(box).join(" "),planningStatusLabel(' + json.dumps(version) + '),old.hidden,walk(missing).join(" ")]'
+    )
+    assert '模型错误未修好' in result[0] and '不表示用户指令有歧义' in result[0]
+    assert result[1] == '模型规划未通过'
+    assert result[2] is True
+    assert '记录格式不可用' in result[3]
