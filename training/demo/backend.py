@@ -131,7 +131,8 @@ class CommandGuard:
     def call(self, operation, **values):
         result = subprocess.run(list(self.deployment.guard_command),
                                 input=json.dumps(dict(operation=operation, **values)),
-                                text=True, capture_output=True, check=True, timeout=45)
+                                text=True, capture_output=True, check=True,
+                                timeout=135 if operation == 'reserve' else 45)
         require(len(result.stdout) <= 65536, 'guard response is too large')
         return json.loads(result.stdout)
 

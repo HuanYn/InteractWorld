@@ -69,8 +69,8 @@ const second = {session_id:'other-test',scene_id:'test-scene',seed:43,
     });
     await page.goto('http://127.0.0.1:9861/');
     await page.waitForFunction(()=>document.querySelector('#edit-base-version').options.length===3);
-    assert.equal(await page.locator('#edit-base-version').inputValue(),'');
-    assert.match(await page.locator('#edit-base').innerText(),/动态跟随.*版本 2/);
+    assert.equal(await page.locator('#edit-base-version').inputValue(),'v-b');
+    assert.match(await page.locator('#edit-base').innerText(),/已固定.*版本 2/);
     assert.deepEqual(await page.locator('#edit-base-version option').evaluateAll(nodes=>nodes.map(n=>n.value)),['','v-a','v-b']);
 
     await page.locator('#edit-base-version').selectOption('v-a');
@@ -88,7 +88,7 @@ const second = {session_id:'other-test',scene_id:'test-scene',seed:43,
     assert.equal(await page.locator('#edit-base-version').inputValue(),'v-a');
 
     await page.locator('#session').selectOption('other-test');
-    assert.equal(await page.locator('#edit-base-version').inputValue(),'');
+    assert.equal(await page.locator('#edit-base-version').inputValue(),'other-a');
     assert.match(await page.locator('#edit-base').innerText(),/other-a/);
     assert.deepEqual(await page.locator('#edit-base-version option').evaluateAll(nodes=>nodes.map(n=>n.value)),['','other-a']);
     await page.locator('#new-session').click();

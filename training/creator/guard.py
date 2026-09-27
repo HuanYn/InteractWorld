@@ -37,6 +37,8 @@ MAX_TOTAL_STORAGE_BYTES = 600_000_000_000
 AUTHORIZED_STORAGE_LIMITS = (300_000_000_000, DEFAULT_TOTAL_STORAGE_BYTES, MAX_TOTAL_STORAGE_BYTES)
 STORAGE_METADATA_ALLOWANCE = 64 * 1024 * 1024
 RPC_SECONDS = 30.0
+RESERVE_RPC_SECONDS = 120.0
+STORAGE_SCAN_SECONDS = 90
 
 
 class GuardError(RuntimeError):
@@ -127,16 +129,17 @@ def _file_lock(path):
 
 
 @contextmanager
-def _deadline():
-    # The video CommandGuard permits 45 seconds including interpreter startup.
-    # SIGALRM also bounds nvidia-smi's own longer timeout and filesystem scans.
+def _deadline(seconds=RPC_SECONDS):
+    # Reserve inventories all retained files before any GPU is claimed. Cold
+    # shared-disk metadata can take >25s; give this CPU-only step a finite window.
+    # Checks/settlement keep the shorter deadline and all resource limits stay.
     if not sys.platform.startswith('linux'):
         yield  # Pure-CPU tests replace physical checks and locking on Windows.
         return
     def expired(_signum, _frame):
-        raise GuardError('guard operation exceeded its thirty-second deadline')
+        raise GuardError(f'guard operation exceeded its {seconds:g}-second deadline')
     previous = signal.signal(signal.SIGALRM, expired)
-    previous_timer = signal.setitimer(signal.ITIMER_REAL, RPC_SECONDS)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, seconds)
     try:
         yield
     finally:
@@ -146,7 +149,7 @@ def _deadline():
 
 def _directory_bytes(path):
     result = subprocess.run(['du', '--bytes', '--summarize', '--', str(path)],
-                            capture_output=True, text=True, check=True, timeout=25)
+                            capture_output=True, text=True, check=True, timeout=STORAGE_SCAN_SECONDS)
     fields = result.stdout.split()
     _require(fields and fields[0].isdigit(), 'invalid storage inventory')
     return int(fields[0])
@@ -323,7 +326,8 @@ class CreatorGuard:
             self._authority()
         self.config.lock_root.mkdir(parents=True, exist_ok=True)
         self.config.ledger.parent.mkdir(parents=True, exist_ok=True)
-        with _deadline(), _file_lock(self.config.ledger.with_suffix(self.config.ledger.suffix + '.lock')):
+        deadline = RESERVE_RPC_SECONDS if payload['operation'] == 'reserve' else RPC_SECONDS
+        with _deadline(deadline), _file_lock(self.config.ledger.with_suffix(self.config.ledger.suffix + '.lock')):
             ledger = self._ledger()
             context = self._context(payload)
             if payload['operation'] == 'reserve':

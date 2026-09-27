@@ -161,6 +161,14 @@ Non-ready plans contain empty edits or empty action_segments, never executable e
 For nonnumeric first/second-half and shorten/lengthen/remove requests, the legacy
 complete action_segments schema remains supported. Respect the stated sequence:
 先前进，然后抬头 must NEVER become first I then W.
+For two sequential actions without times, use the disclosed default of 120 frames
+each (7.5 seconds each), not guessed physical distances or angles for 一点.
+After an explicit 镜头/视角 left/right turn, a following bare 向右转/向左转
+continues the CAMERA subject unless a movement clause intervenes. For example,
+保持前进不变，先把视角左转再向右转 on a forward-moving baseline means
+120 frames W+J then 120 frames W+L, edit_scope camera. A bare 先左转再右转
+without a camera subject remains ambiguous. Do not infer scene-object navigation
+such as 向山走 as a known forward direction or promise arrival at an object.
 Example: "一直前进，后半段抬头" on a new plan means edit_scope all and segments
 [{"frames":120,"keys":["W"]},{"frames":120,"keys":["W","I"]}].
 Then "保留前进，只缩短抬头" means edit_scope camera and segments

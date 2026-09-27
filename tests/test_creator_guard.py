@@ -40,7 +40,7 @@ def fixture(tmp_path, monkeypatch):
     queries, scans = [], []
     monkeypatch.setattr(guard, '_require_linux', lambda: None)
     monkeypatch.setattr(guard, '_file_lock', lambda _path: nullcontext())
-    monkeypatch.setattr(guard, '_deadline', lambda: nullcontext())
+    monkeypatch.setattr(guard, '_deadline', lambda _seconds=guard.RPC_SECONDS: nullcontext())
     monkeypatch.setattr(instance, '_query', lambda lease: queries.append(lease['gpu_uuid']))
     monkeypatch.setattr(guard.gpu_gate, '_run_nvidia_smi', lambda _args: pytest.fail('no actual GPU query in CPU tests'))
     def directory_bytes(path):

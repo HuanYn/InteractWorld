@@ -170,6 +170,26 @@ class _Intent:
 
 _NUMBER = r"(?:\d+(?:\.\d+)?|\.\d+)"
 _OTHER_UNCHANGED = re.compile(r"(?:其余|其他)(?:部分|动作|输入)?(?:都)?(?:保持)?(?:不变|不要动|不改动|不改|不动)")
+_MOUNTAIN_RELATIVE_MOVE = re.compile(
+    r"(?:向|朝|往)(?:着)?(?:那座|这座|远处的?|前方的?)?山(?:峰|顶|脚|边|那边)?(?:的?方向)?(?:走|移动|前进|靠近)"
+)
+
+
+def _camera_turn_ellipsis(text, found, occupied, explicit_scope=False):
+    """Carry an explicit camera subject across a bounded left/right turn list.
+
+    A bare turn never establishes its own subject, and an intervening movement
+    action ends the carry. This is lexical ellipsis, not scene navigation.
+    """
+    for match in re.finditer(r"(?:向|往|朝)?([左右])转", text):
+        positions = set(range(*match.span()))
+        if positions & occupied:
+            continue
+        prior = sorted(action for action in found if action[1] <= match.start())
+        camera_named = explicit_scope or bool(re.search(r"镜头|视角", text[:match.start()]))
+        if camera_named and (not prior or prior[-1][2] in CAMERA_KEYS):
+            found.append((match.start(), match.end(), "J" if match[1] == "左" else "L"))
+            occupied.update(positions)
 
 
 def _timed_intervals(text, actions):
@@ -184,7 +204,7 @@ def _timed_intervals(text, actions):
         cursor = end
     marked.append(text[cursor:])
     marked = re.sub(r"\s+", "", "".join(marked))
-    clauses = re.split(r"[,，。;；！!]|(?=然后|随后|接着|之后)", marked)
+    clauses = re.split(r"[,，。;；！!]|(?=然后|随后|接着|之后|再)", marked)
     intervals, sequence_end = {}, 0
     saw_action = False
     for clause in clauses:
@@ -235,6 +255,8 @@ def _parse(text, previous_rows):
     if type(text) is not str or not text.strip() or len(text) > 2000:
         return None, _result("clarify", "请输入 1–2000 字的移动或镜头指令。")
     text = text.strip().lower()
+    if _MOUNTAIN_RELATIVE_MOVE.search(text):
+        return None, _result("clarify", "当前不能从山的位置推断可靠的世界方向、距离或到达路径。若你只需要近似的移动和镜头输入，请自行确认并改写为例如“前3秒前进，然后抬头3秒”；这不是向山导航或保证到达，请不要将两者等同。")
     if UNSUPPORTED.search(text):
         return None, _result("unsupported", "当前只支持 WASD 移动和 IJKL 镜头输入；不能保证物品交互、角色动作、精确导航或创建新场景。")
     keep_move = bool(PRESERVE_MOVEMENT.search(text) or ONLY_CAMERA.search(text))
@@ -250,6 +272,7 @@ def _parse(text, previous_rows):
             if not positions & occupied:
                 found.append((match.start(), match.end(), key))
                 occupied |= positions
+    _camera_turn_ellipsis(cleaned, found, occupied, explicit_scope=bool(ONLY_CAMERA.search(text)))
     found.sort()
     keys = list(dict.fromkeys(key for _, _, key in found))
     operations = [name for name, pattern in (("shorten", SHORTEN), ("lengthen", LENGTHEN), ("remove", REMOVE))
@@ -523,9 +546,15 @@ def plan_request(text: str, previous: dict | None = None, proposal: dict | None 
     intent, error = _parse(text, original)
     if error is not None:
         return error
-    if proposal is not None:
-        return _validate_proposal(proposal, intent, original)
-    return _fallback(intent, original)
+    result = (_validate_proposal(proposal, intent, original) if proposal is not None
+              else _fallback(intent, original))
+    if result["status"] == "ready" and intent.operation == "set" and intent.intervals is None:
+        if (len(intent.keys) == 2 and SEQUENCE.search(intent.text)
+                and not any(pattern.search(intent.text) for pattern in (HALF_EARLY, HALF_LATE, CONTINUOUS))):
+            result["explanation"] += "未指定秒数，本计划沿用默认分段：第一个动作 0–7.5 秒，第二个动作 7.5–15 秒；可填写明确秒数修改。"
+        if "一点" in intent.text:
+            result["explanation"] += "“一点”没有被换算为实际距离或角度；这里仅安排控制时长，不保证少量位移。若需要更短输入，请写明秒数。"
+    return result
 
 
 def diagnose_proposal(text: str, previous: dict | None = None,
