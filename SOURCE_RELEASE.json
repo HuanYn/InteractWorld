@@ -1,20 +1,36 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "branch": "game",
   "date": "2026-10-09",
   "base_commit": "84763de691d9c165a8e114038e630058cd282603",
-  "scope": "Narrative agent, state and memory, bounded planning/recovery, renderers, local UI and planner SFT source",
+  "scope": "Narrative agent, state and memory, bounded planning/recovery, renderers, local UI and planner SFT source and selected recorded demonstration media",
   "publication_changes": [
     "Private cluster launch and fixed-session recovery are disabled in the portable public entry",
     "Asset paths supplied through documented environment variables and CLI options",
     "Branch-specific README, sample configuration and focused software tests",
-    "Historical baseline REPRODUCTION.json preserved and explicitly scoped"
+    "Historical baseline REPRODUCTION.json preserved and explicitly scoped",
+    "README preview and byte-identical full B/key-route demonstration, with public media provenance"
   ],
   "focused_cpu_tests_passed": 138,
   "ui_build_revalidated_for_export": false,
   "gpu_generation_revalidated_for_export": false,
   "visual_quality_passed": false,
-  "new_weights_datasets_private_sessions_or_media_included": false,
+  "new_weights_included": false,
+  "new_datasets_included": false,
+  "private_sessions_included": false,
+  "new_selected_demo_media_included": true,
   "historical_public_demo_assets_retained": true,
-  "historical_baseline_manifest": "REPRODUCTION.json"
+  "historical_baseline_manifest": "REPRODUCTION.json",
+  "historical_source_only_release": {
+    "commit": "1c80cbda4d3db8959f1ffd91bcfc105863b4760a",
+    "date": "2026-10-09",
+    "new_weights_datasets_private_sessions_or_media_included": false
+  },
+  "media_publication": {
+    "date": "2026-10-09",
+    "manifest": "assets/demos/game-agent-demo.json",
+    "selected_generated_demo_media_included": true,
+    "new_weights_datasets_or_private_sessions_included": false,
+    "new_model_generation": false
+  }
 }

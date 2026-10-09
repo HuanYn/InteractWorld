@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "kind": "selected_generated_demo_media",
+  "source_type": "Edited presentation of nine actual asynchronous model-generated clips, in chronological order at original speed, with logged input captions and authored NPC dialogue.",
+  "original_screen_recording": false,
+  "explicit_interior_scene_cut": true,
+  "interior_scene_cut_description": "An authored interior cut is retained before the final clip; continuous passage through the same door is not verified.",
+  "visual_success_verified": false,
+  "full_video": {
+    "path": "assets/demos/game-agent-demo.mp4",
+    "sha256": "bb7309c55d392075153df5fc9d36218d2464e2d1e26e40a33f89209434bc13d1",
+    "bytes": 46938133,
+    "duration_seconds": 54.5625,
+    "frames": 873,
+    "fps": 16,
+    "width": 1280,
+    "height": 864,
+    "publication_transform": "Byte-identical copy of the existing clean-input demonstration; publication does not constitute visual-quality acceptance."
+  },
+  "preview": {
+    "path": "assets/demos/game-agent-demo-preview.gif",
+    "sha256": "fc9bf28d3e16f1d4d9fdbcff00dbaf3d8a6563f80dd6360c36e5176324b42bf6",
+    "bytes": 4277275,
+    "source_video": "assets/demos/game-agent-demo.mp4",
+    "source_start_seconds": 0,
+    "source_end_seconds": 12.125,
+    "duration_seconds": 12.25,
+    "frames": 49,
+    "fps": 4,
+    "width": 480,
+    "height": 324,
+    "transform": "Chronological 4 FPS sampling, proportional Lanczos resize and 128-color palette. GIF timing is rounded to 49 frames of 250 ms; frame order is unchanged."
+  }
+}

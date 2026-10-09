@@ -6,6 +6,14 @@ This `game` branch contains the interaction layer: structured planning, rule-che
 
 The project is a research prototype, not a finished game or a real-time world simulator. A completed rule transition does **not** establish that the corresponding action appeared in the video.
 
+## Recorded game demo
+
+[![Recorded B-route game demo with actual logged inputs](assets/demos/game-agent-demo-preview.gif)](assets/demos/game-agent-demo.mp4)
+
+[Full video (MP4, 54.6 s)](assets/demos/game-agent-demo.mp4) · [Media provenance](assets/demos/game-agent-demo.json)
+
+Recorded B/key-route functional run: nine actual model clips with logged inputs and authored NPC dialogue, including an explicit interior scene cut. This edited presentation of asynchronous outputs is not a raw screen recording; live streaming and visual success are unverified. The GIF previews the opening 12 seconds.
+
 ## What is implemented
 
 - One laboratory narrative with three configured routes: trust Anna, investigate independently/find the key, or investigate the terminal and Leo.
