@@ -4,6 +4,15 @@ Action-conditioned video generation, self-trained adaptation, and research towar
 
 This branch contains the video/Creator research line. It brings together action Adapter + LoRA training, reference conditioning, causal Teacher Forcing, ODE trajectory distillation, genuine self-rollout DMD implementations, and streaming runtime components. The game/Agent application is maintained on the separate [game branch](https://github.com/HuanYn/InteractWorld/tree/game); [main](https://github.com/HuanYn/InteractWorld) remains the project entry point.
 
+## Selected video demos
+
+| Forward + camera up | Forward + camera left | Windowed action generation |
+| :---: | :---: | :---: |
+| [![Forward and camera-up preview](assets/demos/pair-b-forward-up-preview.gif)](https://huanyn.github.io/InteractWorld/#pair-b-forward-up) | [![Forward and camera-left preview](assets/demos/pair-a-forward-left-preview.gif)](https://huanyn.github.io/InteractWorld/#pair-a-forward-left) | [![Windowed action-generation preview](assets/demos/action-r005-1040-window6-preview.gif)](https://huanyn.github.io/InteractWorld/#action-r005-1040-window6) |
+| [Watch full video](https://huanyn.github.io/InteractWorld/#pair-b-forward-up) | [Watch full video](https://huanyn.github.io/InteractWorld/#pair-a-forward-left) | [Watch full video](https://huanyn.github.io/InteractWorld/#action-r005-1040-window6) |
+
+Selected historical R005 step-1040/window-6 asynchronous demos, with visible artifacts. These illustrate the earlier action-generation route, not the newer TF/DMD or final streaming outcomes. [Selection and media provenance](assets/demos/manifest.json).
+
 ## Current evidence
 
 Release snapshot: 2026-10-09. Source availability, completed training, visual quality, and measured speed are reported separately.
