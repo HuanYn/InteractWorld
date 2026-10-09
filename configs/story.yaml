@@ -1,0 +1,18 @@
+initial: enter_lab
+terminal: [ending_anna, ending_key, ending_terminal]
+nodes:
+  enter_lab: {title: 实验室入口, next: [hear_noise, meet_anna, inspect_terminal]}
+  hear_noise: {title: 听见异响, next: [meet_anna, inspect_terminal]}
+  meet_anna: {title: 遇见 Anna, next: [trust_anna, distrust_anna, inspect_terminal]}
+  trust_anna: {title: 帮助 Anna, next: [get_password]}
+  get_password: {title: 获得密码, next: [core_area]}
+  core_area: {title: 进入核心区域, next: [ending_anna]}
+  distrust_anna: {title: 独自调查, next: [find_red_key]}
+  find_red_key: {title: 找到红钥匙, next: [open_door]}
+  open_door: {title: 门已打开, next: [ending_key]}
+  inspect_terminal: {title: 检查终端, next: [retrieve_log]}
+  retrieve_log: {title: 恢复公开日志, next: [meet_leo]}
+  meet_leo: {title: 遇见 Leo, next: [ending_terminal]}
+  ending_anna: {title: Anna 路线完成, next: []}
+  ending_key: {title: 钥匙路线完成, next: []}
+  ending_terminal: {title: 终端路线完成, next: []}

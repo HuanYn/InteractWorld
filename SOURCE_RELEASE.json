@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "branch": "game",
+  "date": "2026-10-09",
+  "base_commit": "84763de691d9c165a8e114038e630058cd282603",
+  "scope": "Narrative agent, state and memory, bounded planning/recovery, renderers, local UI and planner SFT source",
+  "publication_changes": [
+    "Private cluster launch and fixed-session recovery are disabled in the portable public entry",
+    "Asset paths supplied through documented environment variables and CLI options",
+    "Branch-specific README, sample configuration and focused software tests",
+    "Historical baseline REPRODUCTION.json preserved and explicitly scoped"
+  ],
+  "focused_cpu_tests_passed": 138,
+  "ui_build_revalidated_for_export": false,
+  "gpu_generation_revalidated_for_export": false,
+  "visual_quality_passed": false,
+  "new_weights_datasets_private_sessions_or_media_included": false,
+  "historical_public_demo_assets_retained": true,
+  "historical_baseline_manifest": "REPRODUCTION.json"
+}

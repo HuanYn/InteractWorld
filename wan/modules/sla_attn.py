@@ -1,4 +1,3 @@
-# InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 import torch
 import triton
 import triton.language as tl

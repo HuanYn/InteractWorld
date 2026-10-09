@@ -1,4 +1,3 @@
-# InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 from abc import abstractmethod, ABC
 import torch
 

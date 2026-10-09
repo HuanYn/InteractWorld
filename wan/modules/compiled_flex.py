@@ -1,4 +1,3 @@
-# InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 """Bounded, compiled-only FlexAttention for the fixed Wan window shapes."""
 
 import torch

@@ -1,4 +1,3 @@
-# InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 # causal_wan2_2.py
 # 基于 Wan 2.2 结构 + Wan 2.1 Causal 版本改造
 

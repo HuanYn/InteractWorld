@@ -1,0 +1,11 @@
+pydantic>=2.10,<3
+gradio>=5.49,<6
+PyYAML>=6
+Pillow>=10
+imageio>=2.34
+imageio-ffmpeg>=0.5
+numpy>=1.26,<3
+requests>=2.31
+pytest>=8
+easydict>=1.13
+omegaconf>=2.3

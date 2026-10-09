@@ -1,0 +1,28 @@
+{
+  "profile_id": "laboratory_spatial_v1",
+  "enabled_by_default": false,
+  "rule_class": "interactive.spatial_interactions.SpatialRuleEngine",
+  "graph_class": "interactive.spatial_interactions.SpatialStoryGraph",
+  "story_config": "configs/story-spatial.yaml",
+  "route_contracts": "interactive.spatial_skills.SPATIAL_ROUTES",
+  "source": "authored_spatial_story_not_model_discovery",
+  "session_scope": "new_opt_in_sessions_only_do_not_rewrite_history",
+  "state_meaning": {
+    "player.interaction_target": "rule-owned proximity, not measured camera pose or visual proof",
+    "door_unlocked": "permission only; does not imply open or entered",
+    "door_open": "rule state only; does not prove the video opened the same door",
+    "log_passage_authorized": "new authored C-route passage permission, not key ownership or model discovery"
+  },
+  "routes": {
+    "A": "Anna password -> approach terminal -> use terminal -> approach original door -> open -> core_area ending",
+    "B": "find and pick up red_key -> approach original door -> use key to unlock -> open -> storage_room ending",
+    "C": "approach terminal -> inspect twice -> authored log passage permission -> approach original door -> open -> enter storage_room -> meet Leo -> logs ending"
+  },
+  "boundaries": {
+    "legacy_rule_story_tools_and_scores_modified": false,
+    "visual_success_verified": false,
+    "training_positive_qualified": false,
+    "gpu_calls": 0,
+    "extra_llm_calls": 0
+  }
+}

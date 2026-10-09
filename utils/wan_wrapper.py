@@ -1,4 +1,3 @@
-# InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 import types
 from pathlib import Path
 from typing import List, Optional

@@ -1,4 +1,3 @@
-# InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 #!/usr/bin/env python3
 """
 Tiny AutoEncoder for Hunyuan Video

@@ -241,3 +241,10 @@ checkpoints/
 
 # Operator-written revision marker for a source-only remote deployment.
 .source-revision
+
+# Game sessions and local model/array outputs are private runtime artifacts.
+/outputs/
+/sessions/
+/reports/
+*.npy
+*.npz

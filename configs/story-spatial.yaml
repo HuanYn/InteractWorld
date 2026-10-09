@@ -1,0 +1,24 @@
+profile: laboratory_spatial_v1
+source: authored_spatial_story_not_model_discovery
+initial: enter_lab
+terminal: [ending_anna, ending_key, ending_terminal]
+nodes:
+  enter_lab: {title: 实验室入口, next: [hear_noise, meet_anna, inspect_terminal]}
+  hear_noise: {title: 听见异响, next: [meet_anna, inspect_terminal]}
+  meet_anna: {title: 遇见 Anna, next: [trust_anna, distrust_anna, inspect_terminal]}
+  trust_anna: {title: 帮助 Anna, next: [get_password]}
+  get_password: {title: 获得密码, next: [terminal_unlocked]}
+  terminal_unlocked: {title: 终端授权原门, next: [open_core_door]}
+  open_core_door: {title: 核心区域门已打开, next: [ending_anna]}
+  distrust_anna: {title: 独自调查, next: [find_red_key]}
+  find_red_key: {title: 找到红钥匙, next: [unlock_key_door]}
+  unlock_key_door: {title: 使用钥匙解锁原门, next: [open_door]}
+  open_door: {title: 储藏室门已打开, next: [ending_key]}
+  inspect_terminal: {title: 在终端前检查公开日志, next: [retrieve_log]}
+  retrieve_log: {title: 日志授予剧情通行权限, next: [open_log_door]}
+  open_log_door: {title: 日志路线原门已打开, next: [enter_storage_for_leo]}
+  enter_storage_for_leo: {title: 已进入储藏室寻找 Leo, next: [meet_leo]}
+  meet_leo: {title: 在储藏室内遇见 Leo, next: [ending_terminal]}
+  ending_anna: {title: Anna 密码路线完成, next: []}
+  ending_key: {title: 红钥匙路线完成, next: []}
+  ending_terminal: {title: 日志与 Leo 路线完成, next: []}

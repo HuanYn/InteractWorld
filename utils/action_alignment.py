@@ -1,4 +1,3 @@
-# InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 """Tensor-only action-conditioning alignment shared by Wan training paths."""
 
 from __future__ import annotations

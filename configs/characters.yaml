@@ -1,0 +1,13 @@
+anna:
+  role: researcher
+  personality: [cautious, intelligent, nervous]
+  knowledge: [lab_accident, terminal_password]
+  initial_trust: 0.2
+  initial_fear: 0.7
+  password_trust_threshold: 0.6
+leo:
+  role: security_engineer
+  personality: [suspicious, direct]
+  knowledge: [security_logs, restricted_room]
+  initial_trust: 0.0
+  initial_fear: 0.2

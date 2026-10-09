@@ -1,4 +1,3 @@
-# InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 # Modified from transformers.models.t5.modeling_t5
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import logging
@@ -481,10 +480,8 @@ class T5EncoderModel:
         tokenizer_path=None,
         shard_fn=None,
     ):
-        # Resolve CUDA only when a T5 model is actually constructed. Importing
-        # the video wrapper for CPU asset checks must not initialize a GPU.
         if device is None:
-            device = torch.cuda.current_device()
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.text_len = text_len
         self.dtype = dtype
         self.device = device

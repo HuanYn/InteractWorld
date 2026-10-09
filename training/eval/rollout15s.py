@@ -344,6 +344,12 @@ def default_reference_loader(path: str | Path, anchors: tuple[AnchorSpec, ...]) 
 
 class FFmpegVideoWriter:
     def __init__(self, path: Path, *, width: int, height: int, fps: int) -> None:
+        import shutil
+        executable=shutil.which('ffmpeg')
+        if executable is None:
+            # Use the existing project-local imageio binary on relocated servers.
+            from imageio_ffmpeg import get_ffmpeg_exe
+            executable=get_ffmpeg_exe()
         if path.exists():
             raise FileExistsError(path)
         self.path = path
@@ -352,7 +358,7 @@ class FFmpegVideoWriter:
         self.partial = path.with_name(path.stem + ".partial.mp4")
         self.process = subprocess.Popen(
             [
-                "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                executable, "-nostdin", "-y", "-loglevel", "error",
                 "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
                 "-r", str(fps), "-i", "pipe:0", "-an", "-c:v", "libx264",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(self.partial),
