@@ -27,6 +27,11 @@ import time
 import uuid
 
 from training import gpu_gate
+from training.demo.budget_scope import (
+    CREATOR_50H_SCOPE, CREATOR_100H_SCOPE, CREATOR_BUDGET_SCOPES,
+    CREATOR_SERVER_LIMIT, PROJECT_STORAGE_LIMIT,
+    authority_budget_limits,
+)
 
 # Includes cold local-weight I/O plus inference; the 3090 host needed ~180s
 # just to load the visual model. Still finite and fully reserved in the ledger.
@@ -37,8 +42,11 @@ MAX_TOTAL_STORAGE_BYTES = 600_000_000_000
 AUTHORIZED_STORAGE_LIMITS = (300_000_000_000, DEFAULT_TOTAL_STORAGE_BYTES, MAX_TOTAL_STORAGE_BYTES)
 STORAGE_METADATA_ALLOWANCE = 64 * 1024 * 1024
 RPC_SECONDS = 30.0
-RESERVE_RPC_SECONDS = 120.0
 STORAGE_SCAN_SECONDS = 90
+FULL_STORAGE_SCAN_SECONDS = 240
+# Before claiming either Creator card, allow a complete root inventory plus the
+# new job and the other card's open job, with time left for checks/accounting.
+RESERVE_RPC_SECONDS = FULL_STORAGE_SCAN_SECONDS + 2 * STORAGE_SCAN_SECONDS + RPC_SECONDS
 
 
 class GuardError(RuntimeError):
@@ -147,9 +155,9 @@ def _deadline(seconds=RPC_SECONDS):
         signal.signal(signal.SIGALRM, previous)
 
 
-def _directory_bytes(path):
+def _directory_bytes(path, *, timeout=STORAGE_SCAN_SECONDS):
     result = subprocess.run(['du', '--bytes', '--summarize', '--', str(path)],
-                            capture_output=True, text=True, check=True, timeout=STORAGE_SCAN_SECONDS)
+                            capture_output=True, text=True, check=True, timeout=timeout)
     fields = result.stdout.split()
     _require(fields and fields[0].isdigit(), 'invalid storage inventory')
     return int(fields[0])
@@ -171,33 +179,55 @@ class GuardConfig:
     # defaults or replace the explicit private authority and ledger binding.
     storage_limit: int = DEFAULT_TOTAL_STORAGE_BYTES
     gpu_index: int | None = None
+    budget_scope: str | None = None
+    supplemental_gpu_authority: Path | None = None
 
     @classmethod
     def load(cls, path):
         raw = _read(path, 65536)
         _require(isinstance(raw, dict) and set(raw).issubset(cls.__dataclass_fields__), 'unknown guard configuration fields')
-        required = set(cls.__dataclass_fields__) - {'storage_limit', 'gpu_index'}
+        required = set(cls.__dataclass_fields__) - {'storage_limit', 'gpu_index', 'budget_scope', 'supplemental_gpu_authority'}
         _require(required.issubset(raw), 'guard configuration is incomplete')
         for key in ('authority', 'ledger', 'lock_root', 'project_root', 'python', 'model', 'storage_root'):
             _require(isinstance(raw[key], str) and Path(raw[key]).is_absolute(), f'{key} must be an absolute path')
             # Resolving venv/bin/python's symlink selects the system interpreter
             # and loses the environment's installed torch/transformers packages.
             raw[key] = Path(raw[key]).absolute() if key == 'python' else Path(raw[key]).resolve()
+        if raw.get('supplemental_gpu_authority') is not None:
+            value = raw['supplemental_gpu_authority']
+            _require(isinstance(value, str) and Path(value).is_absolute(), 'supplemental_gpu_authority must be an absolute path')
+            raw['supplemental_gpu_authority'] = Path(value).resolve()
         config = cls(**raw)
         config.validate()
         return config
 
     def validate(self):
+        _require(self.budget_scope in (None, *CREATOR_BUDGET_SCOPES), 'unsupported Creator budget scope')
+        amended = self.budget_scope in CREATOR_BUDGET_SCOPES
+        creator_limit = CREATOR_BUDGET_SCOPES[self.budget_scope][0] if amended else 6
         _require(self.gpu_index is None or (type(self.gpu_index) is int and self.gpu_index >= 0),
                  'gpu_index must be an explicit nonnegative integer or null for a legacy single-card authority')
-        _require(_number(self.prior_gpu_hours_upper) and 0 <= self.prior_gpu_hours_upper <= 160,
+        supplemental = self.supplemental_gpu_authority is not None
+        _require(not supplemental or (self.gpu_index in (0, 1, 2, 3, 4) and self.budget_scope == CREATOR_100H_SCOPE
+            and isinstance(self.supplemental_gpu_authority, Path) and self.supplemental_gpu_authority.is_absolute()
+            and self.supplemental_gpu_authority != self.authority),
+            'supplemental authority requires explicit Creator100 card and separate validated sidecar')
+        if supplemental and self.gpu_index != 0:
+            _require(_read(self.supplemental_gpu_authority,65536).get('gpu_authorization_scope') ==
+                     'creator-completion-all-gpu-20261008-v1', 'legacy master supplement only authorizes GPU0')
+        _require(not amended or self.gpu_index in (1, 2) or supplemental,
+                 'Creator amendment is limited to explicit GPU1/2 without a scoped GPU0 supplement')
+        _require(_number(self.prior_gpu_hours_upper) and 0 <= self.prior_gpu_hours_upper
+                 and (amended or self.prior_gpu_hours_upper <= 160),
                  'invalid prior GPU-hour upper bound')
-        _require(_number(self.max_round_gpu_hours) and 0 < self.max_round_gpu_hours <= 6,
-                 'this Creator round has an operator ceiling of six GPU-hours')
-        _require(type(self.prior_storage_bytes) is int and 0 <= self.prior_storage_bytes <= MAX_TOTAL_STORAGE_BYTES,
+        _require(_number(self.max_round_gpu_hours) and 0 < self.max_round_gpu_hours <= creator_limit,
+                 f'Creator cumulative budget exceeds{creator_limit} GPU-hours' if amended else 'this Creator round has an operator ceiling of six GPU-hours')
+        _require(type(self.prior_storage_bytes) is int and 0 <= self.prior_storage_bytes <=
+                 (PROJECT_STORAGE_LIMIT if amended else MAX_TOTAL_STORAGE_BYTES),
                  'invalid retained prior-storage accounting')
-        _require(type(self.storage_limit) is int and self.storage_limit in AUTHORIZED_STORAGE_LIMITS,
-                 'storage ceiling must be explicitly configured as 300GB, 400GB or 600GB')
+        limits = (*AUTHORIZED_STORAGE_LIMITS, PROJECT_STORAGE_LIMIT) if amended else AUTHORIZED_STORAGE_LIMITS
+        _require(type(self.storage_limit) is int and self.storage_limit in limits,
+                 'storage ceiling must be an explicitly supported limit for this budget scope')
         _require(self.storage_root.is_absolute() and self.storage_root != Path(self.storage_root.anchor)
                  and self.storage_root.is_dir(), 'storage root must be an existing data directory')
         _within(self.project_root, self.storage_root, equal=True)
@@ -209,7 +239,7 @@ class GuardConfig:
     def binding(self):
         # Card selection changes the per-GPU marker, never the shared budget.
         return {key: str(value) if isinstance(value, Path) else value for key, value in asdict(self).items()
-                if key != 'gpu_index'}
+                if key not in ('gpu_index', 'supplemental_gpu_authority') and not (key == 'budget_scope' and value is None)}
 
 
 class CreatorGuard:
@@ -227,14 +257,32 @@ class CreatorGuard:
                  and authority.get('project') == 'InterActWorld' and authority.get('until_user_stop') is True,
                  'an existing ACTIVE InterActWorld authorization is required')
         _require(isinstance(authority.get('authorization_id'), str) and authority['authorization_id'], 'authorization ID missing')
-        _require(authority.get('total_gpu_hours_limit') == 160, 'authorization GPU-hour scope differs')
-        limit = authority.get('total_storage_bytes_limit', 300_000_000_000)
-        _require(type(limit) is int and limit in AUTHORIZED_STORAGE_LIMITS
-                 and cfg.storage_limit <= limit, 'configured storage ceiling is not authorized')
+        try:
+            limits = authority_budget_limits(authority, cfg.budget_scope)
+        except ValueError as error:
+            raise GuardError(str(error)) from error
+        _require(cfg.storage_limit <= limits['total_storage_bytes_limit'], 'configured storage ceiling is not authorized')
         hosts = authority.get('hosts')
         host = hosts.get(gpu_gate.SHARED_PROFILE) if isinstance(hosts, dict) else None
         _require(isinstance(host, dict) and str(host.get('hostname', '')).lower() == socket.gethostname().lower(),
                  'shared-server authorization does not name this host')
+        if cfg.supplemental_gpu_authority is not None:
+            from training.demo.backend import validate_master_gpu0_authority
+            from training.creator import completion_gpu_authority
+            sidecar = cfg.supplemental_gpu_authority
+            supplement = _read(sidecar, 65536)
+            try:
+                if supplement.get('gpu_authorization_scope') == completion_gpu_authority.SCOPE:
+                    _, selected = completion_gpu_authority.validate_authority(supplement,record=sidecar,
+                        gpu_index=cfg.gpu_index,parent_record=cfg.authority,parent=authority,
+                        parent_sha=hashlib.sha256(authority_bytes).hexdigest())
+                else:
+                    _require(cfg.gpu_index == 0, 'legacy master supplement only authorizes GPU0')
+                    _, selected = validate_master_gpu0_authority(supplement, record=sidecar, parent_record=cfg.authority,
+                        parent=authority, parent_sha=hashlib.sha256(authority_bytes).hexdigest())
+            except (ValueError, KeyError, TypeError) as error:
+                raise GuardError(str(error)) from error
+            return supplement, selected, _sha(sidecar)
         if 'gpus' in host:
             cards = host['gpus']
             _require(cfg.gpu_index is not None, 'multi-card authority requires an explicit configured gpu_index')
@@ -249,6 +297,7 @@ class CreatorGuard:
             host = {**selected[0], 'hostname': host['hostname']}
         _require(type(host.get('gpu_index')) is int and host['gpu_index'] >= 0, 'the user-authorized GPU index is missing')
         _require(cfg.gpu_index is None or host['gpu_index'] == cfg.gpu_index, 'configured GPU index is not authorized')
+        _require(cfg.budget_scope is None or host['gpu_index'] in (1, 2), 'Creator amendment does not authorize another GPU')
         gpu_uuid = host.get('gpu_uuid')
         _require(isinstance(gpu_uuid, str) and re.fullmatch(r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', gpu_uuid),
                  'a fixed authorized GPU UUID is required')
@@ -265,6 +314,10 @@ class CreatorGuard:
                  'ledger configuration differs; explicit accounting reconciliation is required')
         _require(type(ledger.get('storage_bytes_upper')) is int and ledger['storage_bytes_upper'] >= 0,
                  'invalid storage ledger')
+        _require(all(record.get('status') != 'reserved' or
+                     record.get('lease', {}).get('budget_scope') == self.config.budget_scope
+                     for record in ledger['reservations'].values()),
+                 'cannot migrate budget scope while an old-scope reservation is active')
         return ledger
 
     def _usage(self, ledger):
@@ -276,8 +329,68 @@ class CreatorGuard:
             seconds += amount
         return seconds / 3600
 
+    def migrate_budget_scope(self, previous_config, amendment_receipt):
+        """Explicit50h->100h rebind, preserving old leases and all accounting.
+
+        The operator supplies a separate new authority and the observed grant
+        receipt. This CPU-only operation takes the existing ledger lock; normal
+        reserve/check/settle operations never migrate a binding implicitly.
+        """
+        _require_linux()
+        previous = CreatorGuard(previous_config)
+        cfg = self.config
+        _require(previous_config.budget_scope == CREATOR_50H_SCOPE
+                 and cfg.budget_scope == CREATOR_100H_SCOPE, 'unsupported explicit budget migration')
+        old_binding, new_binding = previous_config.binding(), cfg.binding()
+        permitted = {'authority', 'budget_scope', 'max_round_gpu_hours'}
+        _require({key: value for key, value in old_binding.items() if key not in permitted}
+                 == {key: value for key, value in new_binding.items() if key not in permitted},
+                 'budget migration must preserve ledger, locks, roots and prior accounting')
+        _require(cfg.authority != previous_config.authority,
+                 'budget migration requires a separate authority file; preserve the old grant')
+        _require(cfg.max_round_gpu_hours >= previous_config.max_round_gpu_hours,
+                 'budget migration cannot lower the configured cumulative ceiling')
+        _require(cfg.ledger.is_file(), 'budget migration requires the existing cumulative ledger')
+        receipt_path = Path(amendment_receipt).resolve()
+        with _deadline(), _file_lock(cfg.ledger.with_suffix(cfg.ledger.suffix + '.lock')):
+            ledger = previous._ledger()
+            usage = previous._usage(ledger)
+            _require(all(record['status'] == 'settled' for record in ledger['reservations'].values()),
+                     'budget migration requires all reservations to be settled')
+            for marker_path in cfg.lock_root.glob('*.lease.json'):
+                marker = _read(marker_path, 65536)
+                _require(marker.get('ledger') != str(cfg.ledger),
+                         'budget migration requires no unresolved marker for this ledger')
+            old_authority, _, old_sha = previous._authority()
+            authority, _, authority_sha = self._authority()
+            _require(authority['hosts'] == old_authority['hosts'],
+                     'budget migration cannot change the authorized host/cards')
+            receipt = _read(receipt_path, 65536)
+            _require(isinstance(receipt, dict)
+                     and receipt.get('budget_scope') == cfg.budget_scope
+                     and receipt.get('preserve_cumulative_accounting') is True
+                     and all(receipt.get(key) == authority[key] for key in (
+                         'creator_gpu_hours_limit', 'current_server_storage_bytes_limit', 'total_storage_bytes_limit')),
+                     'amendment receipt must bind the new scope/limits and preserve cumulative accounting')
+            _require(usage <= cfg.max_round_gpu_hours, 'cumulative usage exceeds the amended budget')
+            self._storage_ok(ledger['storage_bytes_upper'])
+            history = ledger.get('budget_amendments', [])
+            _require(isinstance(history, list), 'invalid budget amendment history')
+            amendment = dict(observed_unix=time.time(), receipt_path=str(receipt_path),
+                             receipt_sha256=_sha(receipt_path), ledger_before_sha256=_sha(cfg.ledger),
+                             previous_authorization_sha256=old_sha, authorization_sha256=authority_sha,
+                             previous_binding=old_binding, binding=new_binding,
+                             preserved_gpu_hours=usage, preserved_storage_bytes_upper=ledger['storage_bytes_upper'],
+                             preserved_reservation_count=len(ledger['reservations']))
+            ledger['binding'] = new_binding
+            ledger['budget_amendments'] = [*history, amendment]
+            _write(cfg.ledger, ledger)
+            return amendment
+
     def _storage_ok(self, storage):
-        _require(storage <= MAX_NEW_STORAGE_BYTES, 'this round exceeds its 100GB added-storage ceiling')
+        limit = (CREATOR_BUDGET_SCOPES[self.config.budget_scope][1]
+                 if self.config.budget_scope in CREATOR_BUDGET_SCOPES else MAX_NEW_STORAGE_BYTES)
+        _require(storage <= limit, f'this round exceeds its {limit // 1_000_000_000}GB current-server storage ceiling')
         total = self.config.prior_storage_bytes + storage
         _require(total <= self.config.storage_limit, 'retained prior plus current storage exceeds the authorized ceiling')
         return total
@@ -315,8 +428,25 @@ class CreatorGuard:
                  and _sha(directory / 'request.json') == digest, 'job request changed')
         maximum = payload.get('max_seconds')
         _require(type(maximum) is int and 1 <= maximum <= 3600, 'invalid worker time bound')
-        return dict(job_id=job, request_sha256=digest, job_directory=str(directory),
-                    project_root=str(cfg.project_root), max_seconds=maximum)
+        context = dict(job_id=job, request_sha256=digest, job_directory=str(directory),
+                       project_root=str(cfg.project_root), max_seconds=maximum)
+        if cfg.supplemental_gpu_authority is not None:
+            context['job_mode'] = self._supplement_context(context)
+        return context
+
+    def _supplement_context(self, context):
+        from training.demo.backend import validate_master_gpu0_context
+        from training.creator import completion_gpu_authority
+        try:
+            supplement = _read(self.config.supplemental_gpu_authority,65536)
+            if supplement.get('gpu_authorization_scope') == completion_gpu_authority.SCOPE:
+                return completion_gpu_authority.validate_context(supplement,**{
+                    k:context[k] for k in ('job_directory','job_id','request_sha256','max_seconds')},
+                    job_mode=context.get('job_mode'),gpu_index=self.config.gpu_index)
+            return validate_master_gpu0_context(job_directory=context['job_directory'], job_id=context['job_id'],
+                request_sha256=context['request_sha256'], max_seconds=context['max_seconds'], job_mode=context.get('job_mode'))
+        except (ValueError, KeyError, TypeError) as error:
+            raise GuardError(str(error)) from error
 
     def dispatch(self, payload):
         _require_linux()
@@ -335,7 +465,12 @@ class CreatorGuard:
             return self._existing(ledger, context, payload)
 
     def _reserve(self, ledger, context):
+        if self.config.supplemental_gpu_authority is not None:
+            _require(context.get('job_mode') == self._supplement_context(context), 'supplement context must be verified before reserve')
         authority, host, authority_sha = self._authority()
+        if authority.get('gpu_authorization_scope') == 'creator-completion-all-gpu-20261008-v1':
+            _require(sum(row['status'] == 'reserved' for row in ledger['reservations'].values()) < 4,
+                     'four-card Creator concurrency ceiling reached')
         _require(not any(record['context']['job_id'] == context['job_id'] for record in ledger['reservations'].values()),
                  'this job already has a reservation; never launch it twice')
         marker = self._marker(host['gpu_uuid'])
@@ -349,23 +484,32 @@ class CreatorGuard:
         round_upper = self._usage(ledger) + seconds / 3600
         _require(round_upper <= self.config.max_round_gpu_hours, 'Creator round GPU-hour budget exhausted')
         global_upper = self.config.prior_gpu_hours_upper + round_upper
-        _require(global_upper <= 160, 'global GPU-hour budget exhausted')
+        _require(self.config.budget_scope in CREATOR_BUDGET_SCOPES or global_upper <= 160, 'global GPU-hour budget exhausted')
         # Small ledger/lease metadata lives outside the active job directory.
         # Reserve its growth explicitly so incremental checks stay conservative.
         incremented = self._storage_increment(ledger)
         job_bytes = _directory_bytes(context['job_directory'])
-        storage = max(incremented, _directory_bytes(self.config.storage_root) + STORAGE_METADATA_ALLOWANCE)
+        storage = max(incremented, _directory_bytes(self.config.storage_root, timeout=FULL_STORAGE_SCAN_SECONDS)
+                      + STORAGE_METADATA_ALLOWANCE)
         storage_total = self._storage_ok(storage)
         now = time.time()
         reservation = uuid.uuid4().hex
         lease = dict(status='reserved', reservation_id=reservation, authorization_id=authority['authorization_id'],
-                     authorization_record=str(self.config.authority), authorization_sha256=authority_sha,
+                     authorization_record=str(self.config.supplemental_gpu_authority or self.config.authority), authorization_sha256=authority_sha,
                      profile=gpu_gate.SHARED_PROFILE, gpu_index=host['gpu_index'], gpu_uuid=host['gpu_uuid'],
                      desktop_memory_max_exclusive=host['desktop_memory_max_exclusive'],
                      job_id=context['job_id'], request_sha256=context['request_sha256'],
                      gpu_hours_reserved=seconds / 3600, global_gpu_hours_upper=global_upper,
                      global_storage_bytes_upper=storage_total, start_before_unix=now + min(900, context['max_seconds'] + 30),
                      deadline_unix=now + context['max_seconds'] + 30)
+        if self.config.supplemental_gpu_authority is not None:
+            lease.update(gpu_authorization_scope=authority['gpu_authorization_scope'],scope_root=authority['scope_root'],
+                job_directory=context['job_directory'],job_mode=context['job_mode'],worker_max_seconds=context['max_seconds'],
+                **{k: authority[k] for k in ('budget_authority_record','budget_authority_id','budget_authority_sha256')})
+        if self.config.budget_scope in CREATOR_BUDGET_SCOPES:
+            lease.update(budget_scope=self.config.budget_scope, creator_gpu_hours_upper=round_upper,
+                         creator_gpu_hours_limit=self.config.max_round_gpu_hours,
+                         current_server_storage_bytes_upper=storage)
         # Hold the global budget lock during the last physical check and claim.
         self._query(lease)
         marker_value = dict(reservation_id=reservation, ledger=str(self.config.ledger),
@@ -406,7 +550,8 @@ class CreatorGuard:
             storage = self._storage_increment(ledger)
             total = self._storage_ok(storage)
             _require(self._usage(ledger) <= self.config.max_round_gpu_hours
-                     and self.config.prior_gpu_hours_upper + self._usage(ledger) <= 160, 'GPU-hour budget exhausted')
+                     and (self.config.budget_scope in CREATOR_BUDGET_SCOPES or
+                          self.config.prior_gpu_hours_upper + self._usage(ledger) <= 160), 'GPU-hour budget exhausted')
             ledger['storage_bytes_upper'] = storage
             _write(self.config.ledger, ledger)
             return dict(status='allowed', reservation_id=submitted['reservation_id'], global_storage_bytes_upper=total)

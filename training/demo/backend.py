@@ -22,6 +22,79 @@ import time
 
 from training.demo.contracts import action_array, contained, require, sha256, write_json
 from training.gpu_gate import DEDICATED_PROFILE, SHARED_PROFILE
+from training.demo.budget_scope import CREATOR_100H_SCOPE, CREATOR_BUDGET_SCOPES, authority_budget_limits
+
+
+MASTER_GPU0_SCOPE = 'creator-master-writeback-gpu0-v1'
+MASTER_GPU0_UUID = 'GPU-00000000-0000-0000-0000-70d5a0d320b8'
+MASTER_GPU0_ROOT = Path('/DATA_DISK/InteractWorld/creator-runtime/abot-retrain-20261003/teacher-master-writeback-v1')
+MASTER_GPU0_JOBS = {
+    f'cmaster-{arm}-{suffix}-v1': ('master_writeback_train' if suffix in ('profile2', 'to20') else 'master_writeback_eval')
+    for arm in ('round', 'retain')
+    for suffix in ('profile2', 'to20', 'j-original', 'j-swap', 'l-original', 'l-swap')
+}
+
+
+def validate_master_gpu0_authority(authority, *, record, parent_record=None, parent=None, parent_sha=None):
+    """One explicit supplemental card grant; the original budget authority stays unchanged."""
+    require(authority.get('status') == 'ACTIVE' and authority.get('project') == 'InterActWorld'
+        and authority.get('until_user_stop') is True and isinstance(authority.get('authorization_id'), str)
+        and bool(authority['authorization_id']) and authority.get('gpu_authorization_scope') == MASTER_GPU0_SCOPE,
+        'active explicit master-writeback GPU0 supplement required')
+    limits = authority_budget_limits(authority, CREATOR_100H_SCOPE)
+    require(authority.get('scope_root') == str(MASTER_GPU0_ROOT)
+        and authority.get('allowed_job_modes') == MASTER_GPU0_JOBS, 'GPU0 supplement job/root/mode scope differs')
+    recorded = authority.get('budget_authority_record')
+    require(isinstance(recorded, str) and Path(recorded).is_absolute()
+        and Path(recorded).resolve() != Path(record).resolve(), 'separate original budget authority required')
+    if parent_record is not None:
+        require(Path(recorded).resolve() == Path(parent_record).resolve(), 'supplement binds another budget authority path')
+    parent_record = Path(recorded)
+    require(parent_record.is_file() and parent_record.stat().st_size <= 65536, 'budget authority missing/oversized')
+    if parent is None:
+        parent = json.loads(parent_record.read_text(encoding='utf-8'))
+    if parent_sha is None:
+        parent_sha = sha256(parent_record)
+    require(parent.get('status') == 'ACTIVE' and parent.get('project') == 'InterActWorld'
+        and parent.get('until_user_stop') is True and parent.get('gpu_authorization_scope') is None
+        and authority.get('budget_authority_id') == parent.get('authorization_id')
+        and authority['authorization_id'] != parent.get('authorization_id')
+        and authority.get('budget_authority_sha256') == parent_sha,
+        'original budget authority ID/hash/status changed')
+    require(authority_budget_limits(parent, CREATOR_100H_SCOPE) == limits,
+        'GPU0 supplement cannot amend the100h/500GB/1.1TB budgets')
+    hosts = authority.get('hosts')
+    require(isinstance(hosts, dict) and set(hosts) == {SHARED_PROFILE}, 'supplement authorizes only the shared server')
+    host, old_host = hosts[SHARED_PROFILE], parent.get('hosts', {}).get(SHARED_PROFILE)
+    require(isinstance(host, dict) and isinstance(old_host, dict)
+        and str(host.get('hostname', '')).lower() == str(old_host.get('hostname', '')).lower() == socket.gethostname().lower(),
+        'supplement and original authority must bind this same host')
+    cards = old_host.get('gpus')
+    require(isinstance(cards, list) and len(cards) == 2
+        and {c.get('gpu_index') for c in cards if isinstance(c, dict)} == {1,2},
+        'unchanged original GPU1/2 budget authority required')
+    selected = dict(gpu_index=0, gpu_uuid=MASTER_GPU0_UUID, desktop_memory_max_exclusive=500)
+    require(set(host) == {'hostname','gpus'} and host.get('gpus') == [selected],
+        'GPU0 supplement requires its exact sole UUID and below500MiB rule')
+    return limits, dict(selected, hostname=host['hostname'])
+
+
+def validate_master_gpu0_context(*, job_directory, job_id, request_sha256, max_seconds, job_mode=None):
+    directory = Path(job_directory).resolve()
+    require(job_id in MASTER_GPU0_JOBS and directory == (MASTER_GPU0_ROOT/job_id).resolve()
+        and directory.is_dir(), 'GPU0 job must be one of twelve direct children of the fixed stage')
+    request_path = directory/'request.json'
+    require(request_path.is_file() and request_path.stat().st_size <= 2_000_000
+        and sha256(request_path) == request_sha256, 'GPU0 actual request changed or missing')
+    request = json.loads(request_path.read_text(encoding='utf-8'))
+    mode = MASTER_GPU0_JOBS[job_id]
+    require(request.get('job_id') == job_id and request.get('mode') == mode
+        and (job_mode is None or job_mode == mode)
+        and request.get('source_revision') == 'creator-master-writeback-pair-v1', 'GPU0 actual request job/mode/revision differs')
+    maximum = 900 if '-profile2-' in job_id else 3600 if '-to20-' in job_id else 1200
+    require(type(max_seconds) is int and 60 <= max_seconds <= maximum
+        and request.get('max_seconds') == max_seconds, 'GPU0 request watchdog differs or exceeds fixed bound')
+    return mode
 
 
 def _source_revision(code_root):
@@ -76,9 +149,11 @@ def validate_lease(lease, *, max_seconds, now=None, job_id=None, request_sha256=
     reserved, upper = lease.get('gpu_hours_reserved'), lease.get('global_gpu_hours_upper')
     require(type(reserved) in (int, float) and math.isfinite(reserved) and reserved >= (max_seconds + 30) / 3600,
             'reservation must include full worker timeout and30s guard/termination allowance')
-    require(type(upper) in (int, float) and math.isfinite(upper) and reserved <= upper <= 160,
+    require(type(upper) in (int, float) and math.isfinite(upper) and reserved <= upper,
+            'invalid global completed+open GPU-hour accounting')
+    limits = validate_active_authority(lease)
+    require(limits['total_gpu_hours_limit'] is None or upper <= limits['total_gpu_hours_limit'],
             'global completed+open reservations exceed160 GPU-hours')
-    validate_active_authority(lease)
 
 
 def validate_active_authority(lease):
@@ -89,12 +164,50 @@ def validate_active_authority(lease):
     require(authority.get('status') == 'ACTIVE' and authority.get('project') == 'InterActWorld'
             and authority.get('authorization_id') == lease['authorization_id']
             and authority.get('until_user_stop') is True, 'active standing authorization is required')
-    storage_limit = authority.get('total_storage_bytes_limit', 300_000_000_000)
-    require(authority.get('total_gpu_hours_limit') == 160 and type(storage_limit) is int
-            and storage_limit in (300_000_000_000, 400_000_000_000, 600_000_000_000), 'authorization budget scope changed')
+    limits = authority_budget_limits(authority, lease.get('budget_scope'))
+    supplementary = lease.get('gpu_authorization_scope') is not None or authority.get('gpu_authorization_scope') is not None
+    from training.creator import completion_gpu_authority
+    completion_supplement = supplementary and authority.get('gpu_authorization_scope') == completion_gpu_authority.SCOPE
+    if completion_supplement:
+        require(lease.get('gpu_authorization_scope') == completion_gpu_authority.SCOPE
+            and lease.get('budget_scope') == CREATOR_100H_SCOPE and lease['profile'] == SHARED_PROFILE,
+            'completion supplement lease scope differs')
+        completion_gpu_authority.validate_authority(authority,record=path,gpu_index=lease['gpu_index'])
+        require(lease.get('scope_root') == str(completion_gpu_authority.ROOT)
+            and all(lease.get(k) == authority[k] for k in ('budget_authority_record','budget_authority_id','budget_authority_sha256')),
+            'completion lease must preserve original budget binding')
+        completion_gpu_authority.validate_context(authority,job_directory=lease.get('job_directory',''),
+            job_id=lease.get('job_id'),request_sha256=lease.get('request_sha256'),
+            max_seconds=lease.get('worker_max_seconds'),job_mode=lease.get('job_mode'),gpu_index=lease['gpu_index'])
+    elif supplementary:
+        require(lease.get('gpu_authorization_scope') == authority.get('gpu_authorization_scope') == MASTER_GPU0_SCOPE
+            and lease.get('budget_scope') == CREATOR_100H_SCOPE and lease['profile'] == SHARED_PROFILE
+            and lease['gpu_index'] == 0 and lease['gpu_uuid'] == MASTER_GPU0_UUID,
+            'supplement is restricted to the fixed master-writeback GPU0 identity')
+        validate_master_gpu0_authority(authority, record=path)
+        require(lease.get('scope_root') == str(MASTER_GPU0_ROOT)
+            and all(lease.get(k) == authority[k] for k in ('budget_authority_record','budget_authority_id','budget_authority_sha256')),
+            'lease must preserve its original budget-authority binding')
+        require(lease.get('job_id') in MASTER_GPU0_JOBS and lease.get('job_mode') == MASTER_GPU0_JOBS[lease['job_id']],
+            'GPU0 lease must carry its explicit fixed job mode')
+        validate_master_gpu0_context(job_directory=lease.get('job_directory',''), job_id=lease.get('job_id'),
+            request_sha256=lease.get('request_sha256'), max_seconds=lease.get('worker_max_seconds'),
+            job_mode=lease.get('job_mode'))
+    storage_limit = limits['total_storage_bytes_limit']
     storage = lease.get('global_storage_bytes_upper')
     require(type(storage) is int and 0 <= storage <= storage_limit,
             'global storage budget exceeds the active authorization limit')
+    if lease.get('budget_scope') in CREATOR_BUDGET_SCOPES:
+        require(lease['profile'] == SHARED_PROFILE and (lease['gpu_index'] in (1, 2) or supplementary),
+                'Creator amendment is limited to authorized shared GPU1/2')
+        cap, upper = lease.get('creator_gpu_hours_limit'), lease.get('creator_gpu_hours_upper')
+        reserved, global_upper = lease.get('gpu_hours_reserved'), lease.get('global_gpu_hours_upper')
+        require(all(type(value) in (int, float) and math.isfinite(value) for value in (cap, upper, reserved, global_upper))
+                and 0 < cap <= limits['creator_gpu_hours_limit'] and 0 <= reserved <= upper <= cap
+                and upper <= global_upper, 'Creator cumulative completed+reserved budget exceeds its explicit limit')
+        server_storage = lease.get('current_server_storage_bytes_upper')
+        require(type(server_storage) is int and 0 <= server_storage <= limits['current_server_storage_bytes_limit']
+                and server_storage <= storage, 'Creator current-server storage exceeds its explicit limit')
     host = authority.get('hosts', {}).get(lease.get('profile'))
     require(isinstance(host, dict) and str(host.get('hostname')).lower() == socket.gethostname().lower(),
             'authorization host mismatch')
@@ -112,6 +225,7 @@ def validate_active_authority(lease):
         host = selected[0]
     for key in ('gpu_uuid', 'gpu_index', 'desktop_memory_max_exclusive'):
         require(host.get(key) == lease.get(key), f'authorization {key} mismatch')
+    return limits
 
 
 class CommandGuard:
@@ -119,8 +233,8 @@ class CommandGuard:
 
     reserve input includes job_id, request_sha256, max_seconds and project_root.
     Output must satisfy validate_lease. The private provider owns a locked global
-    budget ledger, the160h checks, the explicitly authorized300GB/400GB/600GB storage ceiling,
-    and any cross-host open reservations.
+    budget ledger, the explicit scoped GPU/storage ceilings (legacy160h by default),
+    and any cross-host open reservations. A Creator amendment is opt-in, never inferred.
     check returns {status: allowed}; settle returns {status: settled}. All calls
     include the immutable job ID and lease; settlement must be idempotent.
     """
@@ -129,10 +243,12 @@ class CommandGuard:
         self.deployment = deployment
 
     def call(self, operation, **values):
+        # Creator's CPU-only reserve inventory has a finite 450s deadline;
+        # leave 15s for process startup/exit without extending checks/settlement.
         result = subprocess.run(list(self.deployment.guard_command),
                                 input=json.dumps(dict(operation=operation, **values)),
                                 text=True, capture_output=True, check=True,
-                                timeout=135 if operation == 'reserve' else 45)
+                                timeout=465 if operation == 'reserve' else 45)
         require(len(result.stdout) <= 65536, 'guard response is too large')
         return json.loads(result.stdout)
 

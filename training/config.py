@@ -45,6 +45,7 @@ class DataConfig:
     width: int = 832
     num_frames: int = 49
     num_workers: int = 4
+    low_sigma_stratification: bool = False
 
 
 @dataclass
@@ -60,6 +61,7 @@ class OptimizerConfig:
 @dataclass
 class TrainingConfig:
     precision: str = "bf16"
+    lora_parameter_dtype: str = "bfloat16"
     micro_batch_size: int = 1
     gradient_accumulation_steps: int = 8
     max_steps: int = 2000
@@ -107,6 +109,16 @@ class ActionTeacherConfig:
             errors.append("the v1 action-teacher contract fixes LoRA rank to 16")
         if self.training.precision != "bf16":
             errors.append("the v1 action-teacher contract requires bf16")
+        if self.training.lora_parameter_dtype not in ("bfloat16", "float32"):
+            errors.append("lora_parameter_dtype must be bfloat16 or float32")
+        if type(self.data.low_sigma_stratification) is not bool:
+            errors.append("low_sigma_stratification must be an explicit boolean")
+        elif self.data.low_sigma_stratification:
+            if (self.data.data_factory != "training.data.gt_prefix_mix:build_gt_prefix_mix_dataloader"
+                    or self.data.num_frames != 97 or self.training.lora_parameter_dtype != "float32"
+                    or self.optimizer.adapter_lr != 0 or self.optimizer.lora_lr != 2e-6
+                    or self.training.max_steps != 20):
+                errors.append("low sigma requires the explicit FP32 GT97/fixed-adapter/LoRA2e-6/max20 candidate")
         if self.training.micro_batch_size != 1:
             errors.append("micro_batch_size must be 1 on the 32 GB RTX 5090")
         if self.training.gradient_accumulation_steps != 8:
@@ -143,7 +155,13 @@ class ActionTeacherConfig:
             raise ValueError("invalid action-teacher configuration:\n- " + "\n- ".join(errors))
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        # Preserve the exact serialized contract of historical BF16 runs.
+        if self.training.lora_parameter_dtype == "bfloat16":
+            result["training"].pop("lora_parameter_dtype")
+        if self.data.low_sigma_stratification is False:
+            result["data"].pop("low_sigma_stratification")
+        return result
 
 
 def _coerce_tuple_fields(data: dict[str, Any]) -> dict[str, Any]:

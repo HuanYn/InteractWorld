@@ -1,3 +1,4 @@
+# InterActWorld modifications: action/reference conditioning and causal-training integration.
 # InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import math
@@ -10,10 +11,80 @@ from utils.action_alignment import (
     expand_frame_conditioning_to_tokens,
     inject_action_features,
 )
+from utils.controlled_action import inject_controlled_action_features
 
 from .attention import attention
 
 __all__ = ['WanModel']
+
+
+class _WindowConditioningCache:
+    """Explicitly scoped, immutable-condition cache for one inference window.
+
+    Nothing is attached to the model. Exiting the context invalidates the object
+    and drops its GPU tensors, including on an interrupted/failed Euler rollout.
+    """
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.closed = False
+        self.signature = None
+        self.values = {}
+        self._check_mode(owner)
+
+    @staticmethod
+    def _check_mode(owner):
+        if owner.training or torch.is_grad_enabled():
+            raise ValueError('conditioning cache requires eval and the caller\'s no_grad context')
+
+    @staticmethod
+    def _stamp(tensor):
+        return (id(tensor), tensor._version, tuple(tensor.shape), tensor.dtype, tensor.device)
+
+    def validate(self, owner, x, context, actions):
+        if self.closed or owner is not self.owner:
+            raise ValueError('conditioning cache is closed or belongs to another model')
+        self._check_mode(owner)
+        modules = [owner.text_embedding]
+        if actions is not None:
+            modules.append(owner.act_control_adapter)
+        if any(module.training or any(p.requires_grad for p in module.parameters()) for module in modules):
+            raise ValueError('cached projections must stay frozen and in eval mode')
+        inputs = tuple(self._stamp(value) for value in context)
+        action_inputs = None if actions is None else tuple(self._stamp(value) for value in actions)
+        # No noise identity/version: noise and timestep must change during Euler.
+        videos = [x] if torch.is_tensor(x) else x
+        geometry = tuple((tuple(value.shape), value.dtype, value.device) for value in videos)
+        device_type = videos[0].device.type
+        autocast = torch.is_autocast_enabled(device_type)
+        precision = (autocast, torch.get_autocast_dtype(device_type) if autocast else None)
+        parameters = tuple(self._stamp(p) for module in modules for p in module.parameters())
+        signature = (inputs, action_inputs, geometry, precision, parameters, owner.text_len)
+        if self.signature is None:
+            self.signature = signature
+        elif signature != self.signature:
+            raise ValueError('conditioning cache inputs, geometry, precision or weights changed')
+
+    def get(self, key, compute):
+        if self.closed or self.signature is None:
+            raise ValueError('conditioning cache is not active and validated')
+        if key not in self.values:
+            self.values[key] = compute()
+        return self.values[key]
+
+    def close(self):
+        self.values.clear()
+        self.signature = None
+        self.owner = None
+        self.closed = True
+
+    def __enter__(self):
+        if self.closed:
+            raise ValueError('conditioning cache is closed')
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
 
 
 def sinusoidal_embedding_1d(dim, position):
@@ -337,6 +408,31 @@ class WanSelfAttention(nn.Module):
         return x
 
 
+    def forward_reference(self, x, seq_lens, grid_sizes, freqs, ref_tokens, ref_freqs):
+        """Unpadded video reads image memory; image queries read only images.
+
+        Both streams use these exact existing projections (including any LoRA).
+        WanModel selects valid image slots before any biased projection.
+        """
+        from training.reference_memory import apply_reference_rope, split_reference_attention
+
+        def project(tokens):
+            shape = (*tokens.shape[:2], self.num_heads, self.head_dim)
+            return (self.norm_q(self.q(tokens)).view(shape),
+                    self.norm_k(self.k(tokens)).view(shape), self.v(tokens).view(shape))
+
+        q, k, v = project(x)
+        qr, kr, vr = project(ref_tokens)
+        result = split_reference_attention(
+            rope_apply(q, grid_sizes, freqs).type_as(v),
+            rope_apply(k, grid_sizes, freqs).type_as(v), v,
+            q_ref=apply_reference_rope(qr, ref_freqs),
+            k_ref=apply_reference_rope(kr, ref_freqs), v_ref=vr,
+            ref_valid=torch.ones(ref_tokens.shape[:2], device=x.device, dtype=torch.bool),
+        )
+        return self.o(result.video.flatten(2)), self.o(result.reference.flatten(2))
+
+
 class WanCrossAttention(WanSelfAttention):
 
     def forward(self, x, context, context_lens):
@@ -350,8 +446,17 @@ class WanCrossAttention(WanSelfAttention):
 
         # compute query, key, value
         q = self.norm_q(self.q(x)).view(b, -1, n, d)
-        k = self.norm_k(self.k(context)).view(b, -1, n, d)
-        v = self.v(context).view(b, -1, n, d)
+        # Studio may install a window-scoped, branch-isolated text-only cache.
+        # No provider is installed by default or by the training path.
+        provider = getattr(self, '_studio_text_kv_provider', None)
+        if provider is None:
+            k = self.norm_k(self.k(context)).view(b, -1, n, d)
+            v = self.v(context).view(b, -1, n, d)
+        else:
+            def project_text_kv():
+                return (self.norm_k(self.k(context)).view(b, -1, n, d),
+                        self.v(context).view(b, -1, n, d))
+            k, v = provider(context, project_text_kv)
 
         # compute attention
         x = attention(q, k, v, k_lens=context_lens, backend='auto')
@@ -484,6 +589,32 @@ class WanAttentionBlock(nn.Module):
 
         x = cross_attn_ffn(x, context, context_lens, e)
         return x
+
+    def forward_reference(self, x, ref_tokens, ref_e, ref_freqs, e, seq_lens,
+                          grid_sizes, freqs, context, context_lens):
+        """Image-only reference stream sharing self-attention and FFN weights.
+
+        Reference time modulation is the model's actual t=0 embedding. Reference
+        tokens skip text cross-attention, receive no action/noise, and never read
+        video tokens. This is an explicit local design, not an official ABot
+        equivalence claim. Only the video stream is decoded into flow targets.
+        """
+        ev = (self.modulation.unsqueeze(0) + e).chunk(6, dim=2)
+        er = (self.modulation.unsqueeze(0) + ref_e).chunk(6, dim=2)
+        y, yr = self.self_attn.forward_reference(
+            self.norm1(x) * (1 + ev[1].squeeze(2)) + ev[0].squeeze(2),
+            seq_lens, grid_sizes, freqs,
+            self.norm1(ref_tokens) * (1 + er[1].squeeze(2)) + er[0].squeeze(2),
+            ref_freqs,
+        )
+        x = x + y * ev[2].squeeze(2)
+        ref_tokens = ref_tokens + yr * er[2].squeeze(2)
+        x = x + self.cross_attn(self.norm3(x), context, context_lens)
+        x = x + self.ffn(self.norm2(x) * (1 + ev[4].squeeze(2)) + ev[3].squeeze(2)) * ev[5].squeeze(2)
+        ref_tokens = ref_tokens + self.ffn(
+            self.norm2(ref_tokens) * (1 + er[4].squeeze(2)) + er[3].squeeze(2)
+        ) * er[5].squeeze(2)
+        return x, ref_tokens
 
 
 class Head(nn.Module):
@@ -675,6 +806,75 @@ class WanModel(ModelMixin, ConfigMixin):
         if gradient_checkpointing_func is not None:
             self._gradient_checkpointing_func = gradient_checkpointing_func
 
+    def inference_conditioning_cache(self):
+        """Create an opt-in cache; the caller must use/close it within no_grad."""
+        return _WindowConditioningCache(self)
+
+    def _prepare_reference_memory(self, ref_latents, ref_mask, videos, seq_len,
+                                  y, clip_fea, cache):
+        """Select valid image slots before patch projection; no trainable state.
+
+        Opt-in schema: floating [B,K,C,1,H,W] and bool [B,K]. Active references
+        currently require B=1, global attention, exact unpadded patch grids, and
+        no extra image/CLIP/conditioning-cache path. None/empty/all-invalid
+        references return to the original forward without reference arithmetic.
+        """
+        def require(condition, message):
+            if not condition:
+                raise ValueError(message)
+
+        if ref_latents is None:
+            require(ref_mask is None, 'ref_mask requires ref_latents')
+            return None
+        require(torch.is_tensor(ref_latents) and ref_latents.ndim == 6
+                and ref_latents.dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+                and ref_latents.device.type in ('cpu', 'cuda') and ref_latents.layout == torch.strided,
+                'ref_latents must be floating dense CPU/CUDA [B,K,C,1,H,W]')
+        b, slots, channels, frames, height, width = ref_latents.shape
+        require(b > 0 and channels > 0 and frames == 1 and height > 0 and width > 0,
+                'ref_latents require positive dimensions and one image frame per slot')
+        require(torch.is_tensor(ref_mask) and ref_mask.dtype == torch.bool
+                and tuple(ref_mask.shape) == (b, slots) and ref_mask.layout == torch.strided
+                and ref_mask.device == ref_latents.device,
+                'ref_mask must be dense bool [B,K] on the reference device')
+        require(len(videos) == b, 'reference and video batch sizes differ')
+        if not bool(ref_mask.any()):
+            return None
+        require(b == 1, 'active reference memory currently supports B=1 only')
+        require(y is None and clip_fea is None and cache is None,
+                'active reference memory does not support y, clip_fea or conditioning cache')
+        require(tuple(self.window_size) == (-1, -1), 'reference memory requires global attention')
+        video = videos[0]
+        require(torch.is_tensor(video) and video.ndim == 4 and video.layout == torch.strided,
+                'reference memory requires dense video [C,T,H,W]')
+        require(channels == self.in_dim == video.shape[0]
+                and ref_latents.device == video.device and ref_latents.dtype == video.dtype,
+                'reference/video channels, device and dtype must agree')
+        require(self.patch_size[0] == 1 and all(d > 0 and d % p == 0
+                for shape in (video.shape[1:], ref_latents.shape[3:])
+                for d, p in zip(shape, self.patch_size)),
+                'reference memory requires exact patch-divisible video/image grids and temporal patch=1')
+        grid = tuple(d // p for d, p in zip(video.shape[1:], self.patch_size))
+        require(seq_len is None or (type(seq_len) is int and seq_len == math.prod(grid)),
+                'active reference memory requires exact seq_len without video padding')
+        require(max(grid) <= self.freqs.shape[0], 'video grid exceeds the model RoPE table')
+        valid_slots = torch.nonzero(ref_mask[0], as_tuple=False).flatten()
+        # Invalid NaNs must never enter a convolution or a biased projection.
+        images = ref_latents[0].index_select(0, valid_slots)
+        require(bool(torch.isfinite(images).all()), 'valid reference images must be finite')
+        features = self.patch_embedding(images)
+        ref_grid = tuple(features.shape[2:])
+        tokens_per_slot = math.prod(ref_grid)
+        tokens = features.flatten(2).transpose(1, 2).reshape(1, -1, self.dim)
+        from training.reference_memory import build_reference_rope_frequencies
+        frequencies = build_reference_rope_frequencies(
+            self.freqs, num_slots=slots, tokens_per_slot=tokens_per_slot,
+            ref_grid=ref_grid, device=video.device,
+        ).reshape(slots, tokens_per_slot, 1, -1)
+        # Keep original slot coordinates even when an earlier slot is invalid.
+        frequencies = frequencies.index_select(0, valid_slots).reshape(-1, 1, frequencies.shape[-1])
+        return tokens, frequencies
+
     def forward(
         self,
         x,
@@ -685,6 +885,9 @@ class WanModel(ModelMixin, ConfigMixin):
         clip_fea=None,
         act_context=None,
         act_context_scale=1.0,
+        inference_conditioning_cache=None,
+        ref_latents=None,
+        ref_mask=None,
     ):
         r"""
         Forward pass through the diffusion model
@@ -700,6 +903,14 @@ class WanModel(ModelMixin, ConfigMixin):
                 Maximum sequence length for positional encoding
             y (List[Tensor], *optional*):
                 Conditional video inputs for image-to-video mode, same shape as x
+            ref_latents / ref_mask (optional):
+                Explicit image-memory opt-in: [B,K,C,1,H,W] and bool [B,K].
+                Valid references currently require B=1 and exact unpadded global
+                video attention; y/clip_fea/conditioning caches are unsupported.
+                References are image-only, unnoised, action/text-independent.
+                They share backbone weights and gradients, but are not decoded.
+                With active references, seq_len=None infers the exact video
+                patch-grid length for either a batched tensor or a one-item list.
 
         Returns:
             List[Tensor]:
@@ -707,13 +918,28 @@ class WanModel(ModelMixin, ConfigMixin):
         """
         if self.model_type == 'i2v':
             assert y is not None
+        cache = inference_conditioning_cache
+        if cache is not None:
+            if not isinstance(cache, _WindowConditioningCache):
+                raise ValueError('expected a scoped inference conditioning cache')
+            cache.validate(self, x, context, act_context)
         # params
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
             self.freqs = self.freqs.to(device)
 
+        reference = self._prepare_reference_memory(
+            ref_latents, ref_mask, x, seq_len, y, clip_fea, cache)
+        ref_tokens, ref_freqs = reference if reference is not None else (None, None)
+
         if seq_len is None:
-            seq_len = x.shape[2] * x.shape[-2] * x.shape[-1] // (self.patch_size[1] * self.patch_size[2] * self.patch_size[0])
+            if reference is not None:
+                # The reference validator already checked B=1 and divisibility.
+                # The real wrapper leaves seq_len=None; x[0] works for its
+                # [B,C,T,H,W] tensor and the model's one-video list interface.
+                seq_len = math.prod(d // p for d, p in zip(x[0].shape[1:], self.patch_size))
+            else:
+                seq_len = x.shape[2] * x.shape[-2] * x.shape[-1] // (self.patch_size[1] * self.patch_size[2] * self.patch_size[0])
 
 
         if y is not None:
@@ -724,11 +950,17 @@ class WanModel(ModelMixin, ConfigMixin):
 
         if act_context is not None and self.act_control_adapter is not None:
             x_new = []
-            y_action = [self.act_control_adapter(u.unsqueeze(0)) for u in act_context]
+            if cache is None:
+                y_action = [self.act_control_adapter(u.unsqueeze(0)) for u in act_context]
+            else:
+                y_action = cache.get('action_features', lambda: [
+                    self.act_control_adapter(u.unsqueeze(0)) for u in act_context])
             for u, v in zip(x, y_action):
                 t_f = u.shape[2]
                 c_f = v.shape[2]
-                if t_f > c_f:
+                if getattr(self, 'controlled_action_enabled', False):
+                    u = inject_controlled_action_features(self, u, v)
+                elif t_f > c_f:
                     u = inject_action_features(u, v, scale=act_context_scale)
                 else:
                     u = u + v * act_context_scale
@@ -757,14 +989,28 @@ class WanModel(ModelMixin, ConfigMixin):
             e = expand_frame_conditioning_to_tokens(e, grid_sizes, seq_len)
             e0 = expand_frame_conditioning_to_tokens(e0, grid_sizes, seq_len)
 
+        if reference is not None:
+            # sin/cos(t=0) and learned biases are not a fabricated zero vector.
+            ref_time = self.time_embedding(sinusoidal_embedding_1d(
+                self.freq_dim, torch.zeros(1, device=device)).type_as(ref_tokens))
+            ref_e0 = self.time_projection(ref_time).unflatten(1, (6, self.dim)).unsqueeze(1)
+
         # context
         context_lens = None
-        context = self.text_embedding(
-            torch.stack([
-                torch.cat(
-                    [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
-                for u in context
-            ]))
+        if cache is None:
+            context = self.text_embedding(
+                torch.stack([
+                    torch.cat(
+                        [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+                    for u in context
+                ]))
+        else:
+            context = cache.get('text_projection', lambda: self.text_embedding(
+                torch.stack([
+                    torch.cat(
+                        [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+                    for u in context
+                ])))
 
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
@@ -786,7 +1032,16 @@ class WanModel(ModelMixin, ConfigMixin):
 
 
         for block in self.blocks:
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
+            if reference is not None:
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    x, ref_tokens = torch.utils.checkpoint.checkpoint(
+                        block.forward_reference, x, ref_tokens, ref_e0, ref_freqs,
+                        **kwargs, use_reentrant=False,
+                    )
+                else:
+                    x, ref_tokens = block.forward_reference(
+                        x, ref_tokens, ref_e0, ref_freqs, **kwargs)
+            elif torch.is_grad_enabled() and self.gradient_checkpointing:
                 x = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
                     x, **kwargs, use_reentrant=False,

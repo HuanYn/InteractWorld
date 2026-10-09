@@ -1111,7 +1111,7 @@ class Wan2_2_VAE:
             device="cuda",
             vae_type="wan2.2",
             lightvae_pruning_rate=None,
-            lightvae_encoder_vae_pth="/root/kaichen/Wan2.2_VAE.pth",
+            lightvae_encoder_vae_pth="/MODEL_DIR/Wan2.2_VAE.pth",
     ):
 
         self.dtype = dtype

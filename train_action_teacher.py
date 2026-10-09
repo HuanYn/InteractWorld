@@ -30,6 +30,7 @@ import re
 import sys
 import time
 from collections.abc import Iterable, Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,7 @@ import torch.nn.functional as F
 import numpy as np
 
 from training.config import ActionTeacherConfig, load_config
-from training.gpu_gate import query_dedicated_gpu, validate_confirmation
+from training.gpu_gate import SHARED_PROFILE, query_dedicated_gpu, query_shared_gpu, validate_confirmation
 from training.models.action_adapter import build_action_context, pack_canonical_actions
 from training.models.lora import (
     configure_action_teacher,
@@ -64,6 +65,77 @@ SHARED_DATA_HASH_KEYS = ("dataset_manifest", "feature_index", "feature_receipt")
 PROMPT_CACHE_HASH_KEYS = ("prompt_cache", "prompt_cache_receipt")
 LEGACY_ACTION_FACTORY = "training.data.action_dataset:build_action_teacher_dataloader"
 RESAMPLED_ACTION_FACTORY = "training.data.action_resampled:build_resampled_action_teacher_dataloader"
+CONDITION_ROBUSTNESS_FACTORY = "training.data.condition_robustness:build_condition_robustness_dataloader"
+GT_PREFIX_MIX_FACTORY = "training.data.gt_prefix_mix:build_gt_prefix_mix_dataloader"
+FP32_LORA_PARENT_SHA = "9bc9f57cce1095cbbc472307bc3963da2e6153e9f0f19080b542b6bf118dfaee"
+
+
+def fp32_lora_precision_transition() -> dict[str, Any]:
+    return dict(kind="fp32_lora_parameters_bf16_compute_v1",
+                source_lora_parameter_dtype="bfloat16", target_lora_parameter_dtype="float32",
+                backbone_parameter_dtype="bfloat16", action_adapter_parameter_dtype="bfloat16",
+                forward_autocast_dtype="bfloat16", lora_gradient_dtype="float32",
+                separate_master_copy=False)
+
+
+def _apply_lora_parameter_dtype(model, dtype_name):
+    """Called after the original whole-model BF16 cast, before optimizer creation."""
+    from training.models.lora import LoRALinear
+    if dtype_name not in ("bfloat16", "float32"):
+        raise ValueError("unsupported LoRA parameter dtype")
+    parameters = [p for module in model.modules() if type(module) is LoRALinear
+                  for p in (module.lora_a.weight, module.lora_b.weight)]
+    if not parameters or any(p.dtype != torch.bfloat16 for p in parameters):
+        raise ValueError("LoRA precision setup requires freshly constructed BF16 A/B parameters")
+    if dtype_name == "float32":
+        for module in model.modules():
+            if type(module) is LoRALinear:
+                module.lora_a.float()
+                module.lora_b.float()
+    return dict(dtype_name=dtype_name, lora_tensors=len(parameters),
+                lora_elements=sum(p.numel() for p in parameters))
+
+
+def _validate_lora_state_dtype(state, dtype_name):
+    if not isinstance(state, Mapping):
+        raise ValueError("trainable precision requires a tensor state mapping")
+    lora = {name: value for name, value in state.items()
+            if name.endswith((".lora_a.weight", ".lora_b.weight"))}
+    expected = {"bfloat16": torch.bfloat16, "float32": torch.float32}[dtype_name]
+    if not lora or any(not torch.is_tensor(value) or value.dtype != expected for value in lora.values()):
+        raise ValueError(f"checkpoint actual LoRA A/B dtype must be {dtype_name}")
+    if any(not torch.is_tensor(value) or value.dtype != torch.bfloat16
+           for name, value in state.items() if "act_control_adapter." in name):
+        raise ValueError("checkpoint action adapter must retain bfloat16 parameters")
+
+
+def _validate_precision_resume(checkpoint, config):
+    """Reject precision relabeling before load_state_dict can silently cast."""
+    if checkpoint.get("config") != config.to_dict():
+        raise ValueError("strict resume serialized configuration differs")
+    precision = config.training.lora_parameter_dtype
+    actual = (checkpoint.get("initialization") or {}).get("precision_transition")
+    expected = fp32_lora_precision_transition() if precision == "float32" else None
+    if actual != expected:
+        raise ValueError("strict resume precision_transition differs")
+    from training.data.low_sigma import validate_initialization
+    validate_initialization(config, checkpoint.get('initialization') or {})
+    _validate_lora_state_dtype(checkpoint.get("trainable_model"), precision)
+
+
+def _lora_gradient_precision(model):
+    """Observe real accumulated gradients, without scanning their values."""
+    from training.models.lora import LoRALinear
+    parameters = [p for module in model.modules() if type(module) is LoRALinear
+                  for p in (module.lora_a.weight, module.lora_b.weight)]
+    if not parameters or any(p.dtype != torch.float32 or p.grad is None
+                             or p.grad.dtype != torch.float32 for p in parameters):
+        raise ValueError("FP32 LoRA requires an actual FP32 gradient for every A/B parameter")
+    return dict(observed_at="after_accumulation_before_clip_and_step",
+                lora_parameter_dtype="float32", lora_gradient_dtype="float32",
+                lora_gradient_tensors=len(parameters),
+                lora_gradient_elements=sum(p.grad.numel() for p in parameters))
+WEIGHTS_ONLY_DATA_FIELDS = frozenset({"manifest_path", "manifest_sha256", "prompt_cache_path", "data_factory", "num_workers"})
 LENGTH_TRANSITION_SOURCE_STEP = 1040
 LENGTH_TRANSITION_DATA_FIELDS = frozenset({
     "num_frames", "manifest_path", "manifest_sha256", "prompt_cache_path", "data_factory",
@@ -127,6 +199,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--length-transition-from", default=None,
         help="explicit 49-to-97-frame parent step1040 weights only; new optimizer and step zero",
     )
+    checkpoint.add_argument(
+        "--weights-only-from", default=None,
+        help="explicit parent weights transfer to a new49-frame subset; fresh optimizer/RNG/step zero",
+    )
+    parser.add_argument("--weights-only-sha256", default=None, help="exact SHA256 pin for --weights-only-from")
+    parser.add_argument("--base-model-path-relocated", action="store_true",
+                        help="weights-only transfer: explicitly acknowledge relocation of the same pinned Wan revision")
+    parser.add_argument("--length-transition-resampled", action="store_true",
+                        help="explicit 49-to-97 plus legacy-to-absolute-index sampling transition")
+    parser.add_argument("--length-transition-verification-cache", default=None,
+                        help="optional stat-keyed artifact verification cache for the pinned length-transition parent")
+    parser.add_argument("--saved-tensors-on-cpu", action="store_true",
+                        help="explicit training activation offload via autograd save_on_cpu; may increase latency/host RAM")
     parser.add_argument(
         "--length-transition-sha256", default=None,
         help="required exact parent checkpoint SHA256 for --length-transition-from",
@@ -144,6 +229,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--confirmed-at-utc")
     parser.add_argument("--allocation-profile")
     args = parser.parse_args(argv)
+    if bool(args.weights_only_from) != bool(args.weights_only_sha256):
+        parser.error("--weights-only-from and --weights-only-sha256 must be supplied together")
+    if args.weights_only_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", args.weights_only_sha256):
+        parser.error("--weights-only-sha256 must be64 lowercase hexadecimal characters")
+    if args.base_model_path_relocated and not (args.weights_only_from or args.length_transition_from):
+        parser.error("--base-model-path-relocated requires --weights-only-from or --length-transition-from")
+    if (args.length_transition_resampled or args.length_transition_verification_cache) and not args.length_transition_from:
+        parser.error("length-transition options require --length-transition-from")
     if bool(args.length_transition_from) != bool(args.length_transition_sha256):
         parser.error("--length-transition-from and --length-transition-sha256 must be supplied together")
     if args.length_transition_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", args.length_transition_sha256):
@@ -294,6 +387,8 @@ def _build_model(config: ActionTeacherConfig, device: torch.device):
         dropout=config.model.lora_dropout,
     )
     wrapper.to(device=device, dtype=torch.bfloat16)
+    wrapper._lora_parameter_precision = _apply_lora_parameter_dtype(
+        wrapper, config.training.lora_parameter_dtype)
     wrapper.train()
     return wrapper, summary
 
@@ -351,6 +446,13 @@ def _validate_batch(batch: Mapping[str, Any], config: ActionTeacherConfig) -> No
     expected_actions = (config.training.micro_batch_size, config.data.num_frames - 1, 8)
     if tuple(actions.shape) != expected_actions:
         raise ValueError(f"actions must be {expected_actions}, got {tuple(actions.shape)}")
+    if config.data.data_factory == GT_PREFIX_MIX_FACTORY:
+        from training.data.gt_prefix_mix import validate_prefix_batch
+        validate_prefix_batch(batch)
+    elif 'clean_prefix_count' in batch:
+        raise ValueError('clean_prefix_count requires the explicit GT-prefix factory')
+    if config.data.low_sigma_stratification != ('low_sigma_sample' in batch):
+        raise ValueError('low_sigma batch observation requires the explicit sampling configuration')
 
 
 def _move(value: Any, device: torch.device, *, dtype: torch.dtype | None = None):
@@ -388,9 +490,13 @@ def _forward_loss(
         ),
         "act_context_scale": config.model.action_scale,
     }
-    for key in ("y", "clip_fea"):
+    for key in ("y", "clip_fea", "ref_latents"):
         if key in batch:
             conditions[key] = _move(batch[key], device, dtype=torch.bfloat16)
+    if "ref_mask" in batch:
+        # Preserve bool validity rather than coercing arbitrary numeric masks.
+        # The wrapper rejects an incomplete reference pair; WanModel checks shapes.
+        conditions["ref_mask"] = _move(batch["ref_mask"], device)
     model_output = model(
         noisy,
         conditional_dict=conditions,
@@ -405,6 +511,9 @@ def _forward_loss(
         raise RuntimeError(
             f"Wan prediction shape {tuple(prediction.shape)} != target {tuple(target.shape)}"
         )
+    if config.data.data_factory == GT_PREFIX_MIX_FACTORY:
+        from training.data.gt_prefix_mix import future_only_mse
+        return future_only_mse(prediction, target, batch['clean_prefix_count'])
     # Frame zero is a clean TI2V condition, not a denoising target.  Excluding
     # it avoids training the model to emit an artificial zero-flow prediction.
     return F.mse_loss(prediction[:, 1:].float(), target[:, 1:].float())
@@ -439,6 +548,8 @@ def _checkpoint_payload(
     }
     if initialization is not None:
         payload["initialization"] = dict(initialization)
+    if config.training.lora_parameter_dtype == "float32":
+        _validate_precision_resume(payload, config)
     return payload
 
 
@@ -647,6 +758,13 @@ def _load_length_transition_checkpoint(
     expected_sha256: str,
     config: ActionTeacherConfig,
     current_manifest_hashes: Mapping[str, str],
+    base_model_path_relocated: bool = False,
+    resampled: bool = False,
+    verification_cache: str | Path | None = None,
+    freeze_action_adapter: bool = False,
+    gt_prefix_mix: bool = False,
+    lora_fp32: bool = False,
+    low_sigma: bool = False,
 ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
     """Pin one parent and allow only the documented 49-to-97 cache transition.
 
@@ -655,13 +773,31 @@ def _load_length_transition_checkpoint(
     and inline scene-static text. No parent optimizer, RNG, or data position is
     returned: this is a new optimization stage, never source step 1041.
     """
+    from training.paths import is_pinned_base_model
+
     if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise ValueError("length-transition requires an exact lowercase SHA256 pin")
+    if type(base_model_path_relocated) is not bool or type(resampled) is not bool:
+        raise ValueError("length-transition options must be explicit booleans")
+    if type(freeze_action_adapter) is not bool or (freeze_action_adapter and not resampled):
+        raise ValueError("freeze_action_adapter requires an explicit resampled length transition")
+    if type(gt_prefix_mix) is not bool or (gt_prefix_mix and not (resampled and freeze_action_adapter)):
+        raise ValueError('GT prefix mix requires explicit resampled/fixed-adapter initialization')
+    if type(lora_fp32) is not bool or lora_fp32 != (config.training.lora_parameter_dtype == "float32"):
+        raise ValueError('LoRA parameter precision requires its explicit matching lora_fp32 flag')
+    if lora_fp32 and (not gt_prefix_mix or expected_sha256 != FP32_LORA_PARENT_SHA):
+        raise ValueError('FP32 LoRA requires the pinned original R005 GT-prefix/fixed-adapter transfer')
+    from training.data.low_sigma import INIT_MODE, low_sigma_contract, validate_opt_in
+    validate_opt_in(config, low_sigma)
     source = Path(path).resolve()
-    if sha256_file(source) != expected_sha256:
+    digest = sha256_file
+    if verification_cache is not None:
+        from training.demo.relocation import ArtifactHashes
+        digest = ArtifactHashes(verification_cache, protected_paths=[source])
+    if digest(source) != expected_sha256:
         raise ValueError("length-transition parent SHA256 does not match the required pin")
     payload = torch.load(source, map_location="cpu", weights_only=False)
-    if sha256_file(source) != expected_sha256:
+    if digest(source) != expected_sha256:
         raise ValueError("length-transition checkpoint changed while loading")
     if not isinstance(payload, Mapping):
         raise ValueError("length-transition checkpoint must contain a mapping")
@@ -676,20 +812,44 @@ def _load_length_transition_checkpoint(
     target_config = config.to_dict()
     if set(source_config) != set(target_config):
         raise ValueError("length-transition configuration sections differ")
-    for section in ("model", "optimizer"):
-        if source_config.get(section) != target_config[section]:
-            raise ValueError(f"length-transition {section} contract must remain identical")
+    source_model = dict(source_config.get("model", {}))
+    source_base, target_base = source_model.get("base_model_path"), target_config["model"]["base_model_path"]
+    if base_model_path_relocated:
+        if not is_pinned_base_model(source_base) or not is_pinned_base_model(target_base):
+            raise ValueError("length-transition relocation requires the exact pinned Wan revision on both sides")
+        source_model["base_model_path"] = target_base
+    if source_model != target_config["model"]:
+        raise ValueError("length-transition model contract must remain identical except acknowledged base-path relocation")
+    source_optimizer = source_config.get("optimizer")
+    expected_optimizer = source_optimizer
+    if freeze_action_adapter:
+        source_lr = source_optimizer.get("adapter_lr") if isinstance(source_optimizer, Mapping) else None
+        target_lr = target_config["optimizer"].get("adapter_lr")
+        if (type(source_lr) not in (int, float) or not np.isfinite(source_lr) or source_lr <= 0
+                or type(target_lr) not in (int, float) or target_lr != 0):
+            raise ValueError("freeze_action_adapter requires positive parent adapter_lr and exact target adapter_lr=0")
+        expected_optimizer = dict(source_optimizer, adapter_lr=0.0)
+    if gt_prefix_mix:
+        if target_config['optimizer'].get('lora_lr') != 2e-6 or config.training.max_steps != 20:
+            raise ValueError('GT prefix pilot fixes LoRA LR2e-6 and configured max_steps20')
+        expected_optimizer = dict(expected_optimizer, lora_lr=2e-6)
+    if expected_optimizer != target_config["optimizer"]:
+        raise ValueError("length-transition optimizer contract must remain identical")
     source_data = _canonical_data_contract(source_config.get("data"))
     target_data = _canonical_data_contract(target_config["data"])
     if source_data.get("num_frames") != 49 or target_data.get("num_frames") != 97:
         raise ValueError("length-transition permits only 49-to-97 RGB frames")
-    if source_data.get("data_factory") != LEGACY_ACTION_FACTORY or target_data.get("data_factory") != LEGACY_ACTION_FACTORY:
+    target_factory = GT_PREFIX_MIX_FACTORY if gt_prefix_mix else (RESAMPLED_ACTION_FACTORY if resampled else LEGACY_ACTION_FACTORY)
+    if source_data.get("data_factory") != LEGACY_ACTION_FACTORY or target_data.get("data_factory") != target_factory:
         raise ValueError("length-transition requires the same verified action_dataset factory")
     for side in (source_data, target_data):
         if (side.get("height"), side.get("width"), side.get("rgb_frames_per_action_token")) != (480, 832, 4):
             raise ValueError("length-transition requires 480x832 and four RGB frames per action token")
-    if {key: value for key, value in source_data.items() if key not in LENGTH_TRANSITION_DATA_FIELDS} != {
-        key: value for key, value in target_data.items() if key not in LENGTH_TRANSITION_DATA_FIELDS
+    allowed_data_fields = LENGTH_TRANSITION_DATA_FIELDS | ({'low_sigma_stratification'} if low_sigma else set())
+    if source_data.get('low_sigma_stratification', False) is not False:
+        raise ValueError('length-transition must retain the original parent sampling policy')
+    if {key: value for key, value in source_data.items() if key not in allowed_data_fields} != {
+        key: value for key, value in target_data.items() if key not in allowed_data_fields
     }:
         raise ValueError("length-transition data contract differs beyond length/cache fields")
     if source_data.get("manifest_path") == target_data.get("manifest_path"):
@@ -711,6 +871,10 @@ def _load_length_transition_checkpoint(
     if not isinstance(source_training, Mapping):
         raise ValueError("length-transition requires source training configuration")
     allowed_training_fields = {"max_steps", "output_dir"}
+    if lora_fp32:
+        if source_training.get("lora_parameter_dtype", "bfloat16") != "bfloat16":
+            raise ValueError("FP32 LoRA initialization requires the original BF16 parent")
+        allowed_training_fields.add("lora_parameter_dtype")
     if {key: value for key, value in source_training.items() if key not in allowed_training_fields} != {
         key: value for key, value in target_config["training"].items() if key not in allowed_training_fields
     }:
@@ -726,12 +890,19 @@ def _load_length_transition_checkpoint(
     ):
         raise ValueError("length-transition trainable model must map parameter names to tensors")
     changed_fields = sorted(key for key in source_data if source_data[key] != target_data.get(key))
-    return dict(state), {
-        "mode": "length_transition_weights_only", "path": str(source), "sha256": expected_sha256,
+    initialization = {
+        "mode": ("length_gt_prefix_mix_transition_weights_only" if gt_prefix_mix else
+                 "length_resampled_transition_weights_only" if resampled else "length_transition_weights_only"),
+        "path": str(source), "sha256": expected_sha256,
         "source_stage": payload["stage"], "source_step": payload["step"],
         "source_config": dict(source_config), "source_manifest_hashes": dict(source_hashes),
         "target_manifest_hashes": dict(current_manifest_hashes),
         "source_initialization": payload.get("initialization"),
+        "base_model_relocation": {"acknowledged": base_model_path_relocated,
+                                  "changed": source_base != target_base, "source": source_base, "target": target_base},
+        "sampling_transition": {"changed": resampled, "source_factory": LEGACY_ACTION_FACTORY,
+                                "target_factory": target_factory,
+                                "index_policy": "absolute_index_episode_round_robin_window_permutation_v1" if resampled else "legacy"},
         "length_transition": {
             "version": 1, "source_rgb_frames": 49, "target_rgb_frames": 97,
             "source_latent_frames": 13, "target_latent_frames": 25,
@@ -739,7 +910,7 @@ def _load_length_transition_checkpoint(
             "changed_data_fields": changed_fields,
             "encoding_policy": "independent_continuous_rgb_window_vae_v1",
             "target_cache_kind": "action_teacher_window97_features_v1",
-            "model_contract_unchanged": True, "optimizer_config_unchanged": True,
+            "model_contract_unchanged": True, "optimizer_config_unchanged": not freeze_action_adapter,
             "source_position_restored": False,
         },
         "prompt_transition": {
@@ -749,6 +920,147 @@ def _load_length_transition_checkpoint(
         "optimizer_restored": False, "rng_restored": False, "start_step": 0,
         "micro_batches_consumed": 0, "seed": config.training.seed,
     }
+    if freeze_action_adapter:
+        initialization["optimizer_transition"] = {
+            "kind": "freeze_action_adapter_lr_zero_v1", "changed_fields": ["adapter_lr"],
+            "source_adapter_lr": source_optimizer["adapter_lr"], "target_adapter_lr": 0.0,
+            "other_optimizer_fields_unchanged": True, "requires_grad_unchanged": True,
+            "complete_trainable_state_preserved": True,
+        }
+    if gt_prefix_mix:
+        from training.data.gt_prefix_mix import prefix_contract
+        initialization['prefix_contract'] = prefix_contract()
+        initialization['optimizer_transition'].update(kind='gt_prefix_mix_fixed_adapter_lora2e6_v1',
+            changed_fields=['adapter_lr', 'lora_lr'], source_lora_lr=source_optimizer['lora_lr'], target_lora_lr=2e-6)
+    if lora_fp32:
+        _validate_lora_state_dtype(state, "bfloat16")
+        initialization['precision_transition'] = fp32_lora_precision_transition()
+    if low_sigma:
+        initialization['mode'] = INIT_MODE
+        initialization['low_sigma_contract'] = low_sigma_contract()
+        initialization['length_transition']['changed_data_fields'].append('low_sigma_stratification')
+    return dict(state), initialization
+
+
+def _load_weights_only_checkpoint(
+    path: str | Path, *, expected_sha256: str, config: ActionTeacherConfig,
+    current_manifest_hashes: Mapping[str, str], base_model_path_relocated: bool = False,
+) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+    """Explicit new-subset transfer, never a relaxation of warm-start/resume.
+
+    Target receipts must first pass the original ``_manifest_hashes`` validator.
+    Only the immutable parent weights/provenance survive; no optimizer, RNG or
+    source data position is returned. Model names/shapes are checked again by
+    ``load_trainable_state_dict`` against the newly constructed model.
+    """
+    from training.paths import is_pinned_base_model
+
+    config.validate()
+    if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("weights-only transfer requires an exact lowercase SHA256 pin")
+    if type(base_model_path_relocated) is not bool:
+        raise ValueError("base-model relocation acknowledgement must be an explicit boolean")
+    source = Path(path).resolve()
+    if sha256_file(source) != expected_sha256:
+        raise ValueError("weights-only parent SHA256 does not match the required pin")
+    payload = torch.load(source, map_location="cpu", weights_only=False)
+    if sha256_file(source) != expected_sha256:
+        raise ValueError("weights-only parent changed while loading")
+    if not isinstance(payload, Mapping) or (payload.get("format_version"), payload.get("stage")) != (1, "action_teacher_lora_v1"):
+        raise ValueError("weights-only requires an action_teacher_lora_v1 format_version=1 parent")
+    step = payload.get("step")
+    if type(step) is not int or step <= 0:
+        raise ValueError("weights-only parent must have a positive optimizer step")
+    saved, hashes = payload.get("config"), payload.get("manifest_hashes")
+    target = config.to_dict()
+    if not isinstance(saved, Mapping) or set(saved) != set(target) or not isinstance(hashes, Mapping):
+        raise ValueError("weights-only parent requires complete configuration and artifact hashes")
+    if not isinstance(saved.get("model"), Mapping):
+        raise ValueError("weights-only parent model contract missing")
+    before_model, after_model = dict(saved["model"]), dict(target["model"])
+    before_base, after_base = before_model.get("base_model_path"), after_model.get("base_model_path")
+    if not is_pinned_base_model(before_base) or not is_pinned_base_model(after_base):
+        raise ValueError("weights-only requires the exact pinned Wan base revision on both sides")
+    relocated = before_base != after_base
+    if relocated and not base_model_path_relocated:
+        raise ValueError("weights-only base-model path differs; explicit relocation acknowledgement required")
+    if base_model_path_relocated:
+        before_model["base_model_path"] = after_base
+    # Activation checkpointing changes storage/recomputation, not the model.
+    before_model.pop("gradient_checkpointing", None)
+    after_model.pop("gradient_checkpointing", None)
+    if before_model != after_model:
+        raise ValueError("weights-only model architecture/LoRA/action conditioning contract differs")
+    before_data, after_data = _canonical_data_contract(saved.get("data")), _canonical_data_contract(target["data"])
+    if before_data.get("num_frames") != 49 or after_data.get("num_frames") != 49:
+        raise ValueError("weights-only subset transfer requires49 RGB frames on both sides")
+    if before_data.get("data_factory") != LEGACY_ACTION_FACTORY or after_data.get("data_factory") not in (
+        LEGACY_ACTION_FACTORY, RESAMPLED_ACTION_FACTORY, CONDITION_ROBUSTNESS_FACTORY,
+    ):
+        raise ValueError("weights-only permits only the legacy parent and explicit subset/resampled/condition-robustness factories")
+    if {key: value for key, value in before_data.items() if key not in WEIGHTS_ONLY_DATA_FIELDS} != {
+        key: value for key, value in after_data.items() if key not in WEIGHTS_ONLY_DATA_FIELDS
+    }:
+        raise ValueError("weights-only data geometry/actions contract differs beyond explicit subset fields")
+    if before_data.get("manifest_path") == after_data.get("manifest_path"):
+        raise ValueError("weights-only subset transfer requires a new manifest path")
+    expected_hash_keys = {*SHARED_DATA_HASH_KEYS, *PROMPT_CACHE_HASH_KEYS, "training_config"}
+    for label, values in (("parent", hashes), ("target", current_manifest_hashes)):
+        if set(values) != expected_hash_keys or any(
+            not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in values.values()
+        ):
+            raise ValueError(f"weights-only {label} needs all six exact static-prompt artifact hashes")
+    before_prompt, after_prompt = _prompt_contract(before_data, hashes), _prompt_contract(after_data, current_manifest_hashes)
+    if before_prompt["policy"] != "scene_static_only_v1" or after_prompt["policy"] != "scene_static_only_v1":
+        raise ValueError("weights-only subset must preserve the static-prompt policy and inference-compatible cache")
+    if any(hashes[key] == current_manifest_hashes[key] for key in ("dataset_manifest", "training_config")):
+        raise ValueError("weights-only subset requires new manifest and training-config hashes")
+    before_train = saved.get("training")
+    if not isinstance(before_train, Mapping) or not isinstance(before_train.get("output_dir"), str) or (
+        Path(before_train["output_dir"]).resolve() == Path(config.training.output_dir).resolve()
+    ):
+        raise ValueError("weights-only transfer requires a different fresh output directory")
+    if any(before_train.get(key) != target["training"][key] for key in ("precision", "micro_batch_size")):
+        raise ValueError("weights-only precision/micro-batch contract differs")
+    state = payload.get("trainable_model")
+    if not isinstance(state, Mapping) or not state or any(
+        not isinstance(name, str) or not torch.is_tensor(value) for name, value in state.items()
+    ) or not any(".lora_a." in name for name in state) or not any("act_control_adapter" in name for name in state):
+        raise ValueError("weights-only parent must contain actual LoRA and action-adapter tensor state")
+    return dict(state), {
+        "mode": "subset_weights_only", "path": str(source), "sha256": expected_sha256,
+        "source_stage": payload["stage"], "source_step": step,
+        "source_config": dict(saved), "source_manifest_hashes": dict(hashes),
+        "target_manifest_hashes": dict(current_manifest_hashes), "source_initialization": payload.get("initialization"),
+        "data_transition": {"changed_fields": sorted(key for key in set(before_data) | set(after_data)
+                              if before_data.get(key) != after_data.get(key)),
+                            "source_factory": before_data["data_factory"], "target_factory": after_data["data_factory"],
+                            "geometry_actions_contract_unchanged": True, "source_position_restored": False},
+        "base_model_relocation": {"acknowledged": base_model_path_relocated, "changed": relocated,
+                                  "source": before_base, "target": after_base, "exact_pinned_revision": True,
+                                  "scope": "explicit operator path mapping, not a new base-weight byte audit"},
+        "prompt_transition": {"policy_changed": False, "source": before_prompt, "target": after_prompt},
+        "optimizer_restored": False, "rng_restored": False, "start_step": 0,
+        "micro_batches_consumed": 0, "seed": config.training.seed,
+    }
+
+
+def _shared_training_gpu(lease, *, max_seconds, request_sha256):
+    """Function-only entry for the existing external leased/watchdog worker."""
+    from training.demo.backend import validate_active_authority, validate_lease
+
+    if not isinstance(lease, dict) or lease.get("profile") != SHARED_PROFILE:
+        raise ValueError("shared training requires the actual shared-server guard lease")
+    if type(max_seconds) is not int or max_seconds <= 0:
+        raise ValueError("shared training requires a positive finite watchdog duration")
+    if not isinstance(request_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None:
+        raise ValueError("shared training requires the actual request-file SHA256")
+    if not isinstance(lease.get("job_id"), str) or not lease["job_id"] or lease.get("request_sha256") != request_sha256:
+        raise ValueError("shared training lease belongs to a different request/job")
+    validate_lease(lease, max_seconds=max_seconds, job_id=lease["job_id"], request_sha256=request_sha256)
+    validate_active_authority(lease)
+    return query_shared_gpu(confirmed_index=lease["gpu_index"], confirmed_uuid=lease["gpu_uuid"],
+                            profile=lease["profile"], memory_max_exclusive=lease["desktop_memory_max_exclusive"])
 
 
 def _execution_limit(max_steps: int, stop_after_step: int | None, start_step: int = 0) -> int:
@@ -879,29 +1191,94 @@ def launch(
     resume: str | None,
     initialize_from: str | None,
     *,
-    confirmed_gpu_index: int,
-    confirmed_gpu_uuid: str,
-    confirmed_at_utc: str,
-    allocation_profile: str,
+    confirmed_gpu_index: int | None = None,
+    confirmed_gpu_uuid: str | None = None,
+    confirmed_at_utc: str | None = None,
+    allocation_profile: str | None = None,
     warm_start_from: str | None = None,
     sampling_transition_from: str | None = None,
     length_transition_from: str | None = None,
     length_transition_sha256: str | None = None,
+    length_transition_resampled: bool = False,
+    length_transition_verification_cache: str | Path | None = None,
+    freeze_action_adapter: bool = False,
+    gt_prefix_mix: bool = False,
+    lora_fp32: bool = False,
+    low_sigma: bool = False,
+    fp32_measured_continuation: Mapping[str, Any] | None = None,
+    weights_only_from: str | None = None,
+    weights_only_sha256: str | None = None,
+    base_model_path_relocated: bool = False,
+    saved_tensors_on_cpu: bool = False,
+    shared_lease: dict | None = None,
+    shared_max_seconds: int | None = None,
+    shared_request_sha256: str | None = None,
     stop_after_step: int | None = None,
     profile_runtime: bool = False,
 ) -> None:
     launch_started = time.perf_counter()
-    if sum(value is not None for value in (resume, initialize_from, warm_start_from, sampling_transition_from, length_transition_from)) > 1:
+    if sum(value is not None for value in (resume, initialize_from, warm_start_from, sampling_transition_from,
+                                          length_transition_from, weights_only_from)) > 1:
         raise ValueError("resume and checkpoint initialization modes are mutually exclusive")
     if bool(length_transition_from) != bool(length_transition_sha256):
         raise ValueError("length-transition path and exact SHA256 pin must be supplied together")
+    if bool(weights_only_from) != bool(weights_only_sha256):
+        raise ValueError("weights-only path and exact SHA256 pin must be supplied together")
+    if base_model_path_relocated and weights_only_from is None and length_transition_from is None:
+        raise ValueError("base-model relocation acknowledgement requires weights-only transfer")
+    if (length_transition_resampled or length_transition_verification_cache is not None) and length_transition_from is None:
+        raise ValueError("length-transition options require an explicit length-transition parent")
+    if type(freeze_action_adapter) is not bool or (freeze_action_adapter and not (
+            length_transition_from is not None and length_transition_resampled)):
+        raise ValueError("freeze_action_adapter requires a new explicit resampled length-transition initialization")
+    if type(gt_prefix_mix) is not bool or (gt_prefix_mix and not (
+            length_transition_from is not None and length_transition_resampled and freeze_action_adapter)):
+        raise ValueError('GT prefix mix flag requires a new explicit resampled/fixed-adapter initialization')
+    if config.data.data_factory == GT_PREFIX_MIX_FACTORY:
+        if not (gt_prefix_mix or resume is not None):
+            raise ValueError('GT prefix factory requires its explicit initialization or strict same-config resume')
+        if config.data.num_frames != 97 or config.optimizer.adapter_lr != 0 or config.optimizer.lora_lr != 2e-6 or config.training.max_steps != 20:
+            raise ValueError('GT prefix pilot fixes cached97/adapter LR0/LoRA LR2e-6/max_steps20')
+    elif gt_prefix_mix:
+        raise ValueError('GT prefix flag requires the explicit GT prefix factory')
+    if type(lora_fp32) is not bool or lora_fp32 != (config.training.lora_parameter_dtype == "float32"):
+        raise ValueError('LoRA parameter precision requires its explicit matching lora_fp32 flag')
+    from training.data.low_sigma import validate_opt_in, low_sigma_contract
+    validate_opt_in(config, low_sigma)
+    if fp32_measured_continuation is not None:
+        from training.studio.window97_train import measured_fp32_continuation
+        if (not lora_fp32 or resume is None or stop_after_step != 20
+                or type(shared_max_seconds) is not int or not 60 <= shared_max_seconds <= 2700
+                or not isinstance(fp32_measured_continuation, Mapping)
+                or dict(fp32_measured_continuation) != measured_fp32_continuation(
+                    fp32_measured_continuation.get('source_job', ''))
+                or str(Path(resume).resolve()) != fp32_measured_continuation['checkpoint']
+                or str(Path(config_path).resolve()) != fp32_measured_continuation['config']):
+            raise ValueError('FP32 measured continuation requires exact settled step2 evidence and finite resume20')
+    if lora_fp32:
+        if (config.data.data_factory != GT_PREFIX_MIX_FACTORY or config.optimizer.adapter_lr != 0
+                or config.optimizer.lora_lr != 2e-6 or config.training.max_steps != 20
+                or (stop_after_step != 2 and fp32_measured_continuation is None)
+                or not (resume is not None or gt_prefix_mix)):
+            raise ValueError('FP32 LoRA pilot requires GT97/fixed-adapter/LoRA2e-6 and stop2 or measured resume20')
+    if type(saved_tensors_on_cpu) is not bool:
+        raise ValueError("saved_tensors_on_cpu must be an explicit boolean")
     _execution_limit(config.training.max_steps, stop_after_step)
-    validate_confirmation(confirmed_at_utc)
-    gpu_snapshot = query_dedicated_gpu(
-        confirmed_index=confirmed_gpu_index,
-        confirmed_uuid=confirmed_gpu_uuid,
-        profile=allocation_profile,
-    )
+    if shared_lease is None:
+        if shared_max_seconds is not None or shared_request_sha256 is not None:
+            raise ValueError("shared watchdog/request fields require a guard lease")
+        validate_confirmation(confirmed_at_utc)
+        gpu_snapshot = query_dedicated_gpu(
+            confirmed_index=confirmed_gpu_index, confirmed_uuid=confirmed_gpu_uuid, profile=allocation_profile,
+        )
+    else:
+        for value, key in ((confirmed_gpu_index, "gpu_index"), (confirmed_gpu_uuid, "gpu_uuid"),
+                           (allocation_profile, "profile")):
+            if value is not None and value != shared_lease.get(key):
+                raise ValueError("explicit GPU fields differ from shared guard lease")
+        gpu_snapshot = _shared_training_gpu(shared_lease, max_seconds=shared_max_seconds,
+                                             request_sha256=shared_request_sha256)
+        confirmed_gpu_uuid = shared_lease["gpu_uuid"]
     if not torch.cuda.is_available():
         raise RuntimeError("--launch was requested but CUDA is unavailable")
     device = torch.device("cuda", 0)
@@ -939,6 +1316,17 @@ def launch(
         warm_start_state, initialization = _load_length_transition_checkpoint(
             length_transition_from, expected_sha256=length_transition_sha256,
             config=config, current_manifest_hashes=manifest_hashes,
+            base_model_path_relocated=base_model_path_relocated, resampled=length_transition_resampled,
+            verification_cache=length_transition_verification_cache,
+            freeze_action_adapter=freeze_action_adapter,
+            gt_prefix_mix=gt_prefix_mix,
+            lora_fp32=lora_fp32,
+            low_sigma=low_sigma,
+        )
+    if weights_only_from is not None:
+        warm_start_state, initialization = _load_weights_only_checkpoint(
+            weights_only_from, expected_sha256=weights_only_sha256, config=config,
+            current_manifest_hashes=manifest_hashes, base_model_path_relocated=base_model_path_relocated,
         )
     output_dir = Path(config.training.output_dir)
     if resume is None and output_dir.exists() and any(output_dir.iterdir()):
@@ -967,7 +1355,22 @@ def launch(
         "conditioning_modules": "precomputed; VAE and T5 are frozen and not loaded into the training process",
         "started_unix": time.time(),
         "execution": {"stop_after_step": stop_after_step, "configured_max_steps": config.training.max_steps},
+        "memory_saving": {"activation_checkpointing": config.model.gradient_checkpointing,
+                          "saved_tensors_on_cpu": saved_tensors_on_cpu,
+                          "saved_tensor_pin_memory": saved_tensors_on_cpu},
     }
+    if shared_lease is not None:
+        metadata["shared_guard"] = {"lease": dict(shared_lease), "max_seconds": shared_max_seconds,
+                                    "request_sha256": shared_request_sha256, "watchdog_owner": "external_guard_worker"}
+    if config.data.data_factory == GT_PREFIX_MIX_FACTORY:
+        from training.data.gt_prefix_mix import prefix_contract
+        metadata['prefix_contract'] = prefix_contract()
+    if lora_fp32:
+        metadata['precision_transition'] = fp32_lora_precision_transition()
+    if low_sigma:
+        metadata['low_sigma_contract'] = low_sigma_contract()
+    if fp32_measured_continuation is not None:
+        metadata['measured_continuation'] = dict(fp32_measured_continuation)
     (output_dir / "run_metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
     )
@@ -982,6 +1385,7 @@ def launch(
             metadata=metadata, initialization=initialization, resume=resume,
             gate_checkpoint=gate_checkpoint, warm_start_state=warm_start_state,
             stop_after_step=stop_after_step, profiler=profiler, launch_started=launch_started,
+            saved_tensors_on_cpu=saved_tensors_on_cpu,
         )
     except BaseException as exc:
         profiler.close(error=exc)
@@ -1002,9 +1406,12 @@ def _execute_training(
     resume: str | None, gate_checkpoint: Mapping[str, Any] | None,
     warm_start_state: Mapping[str, torch.Tensor] | None, stop_after_step: int | None,
     profiler: OptimizerStepProfiler, launch_started: float,
+    saved_tensors_on_cpu: bool = False,
 ) -> None:
     with profiler.phase("model_load"):
         model, summary = _build_model(config, device)
+    if config.training.lora_parameter_dtype == "float32":
+        metadata['actual_lora_parameter_precision'] = model._lora_parameter_precision
     with profiler.phase("optimizer_build"):
         optimizer = _build_optimizer(model, config)
     with profiler.phase("data_loader"):
@@ -1033,6 +1440,28 @@ def _execute_training(
         initialization = checkpoint.get("initialization", initialization)
         if not isinstance(initialization, Mapping):
             raise ValueError("resume checkpoint initialization provenance must be a mapping")
+        if config.data.data_factory == GT_PREFIX_MIX_FACTORY:
+            from training.data.gt_prefix_mix import prefix_contract
+            from training.data.low_sigma import INIT_MODE, validate_initialization
+            expected_mode = INIT_MODE if config.data.low_sigma_stratification else 'length_gt_prefix_mix_transition_weights_only'
+            if (initialization.get('mode') != expected_mode
+                    or initialization.get('prefix_contract') != prefix_contract()):
+                raise ValueError('GT prefix strict resume requires identical prefix contract and original initialization')
+            validate_initialization(config, initialization)
+        # Keep the legacy49 resume contract unchanged. Native97 already has
+        # strict config equality; malformed states still meet its strict loader.
+        if (config.training.lora_parameter_dtype == "float32"
+                or "precision_transition" in initialization
+                or (config.data.num_frames == 97 and any(
+                    name.endswith((".lora_a.weight", ".lora_b.weight"))
+                    for name in checkpoint.get("trainable_model", {})))):
+            _validate_precision_resume(checkpoint, config)
+        if metadata.get('measured_continuation') is not None:
+            if (checkpoint.get('step') != 2 or checkpoint.get('micro_batches_consumed') != 16
+                    or initialization.get('sha256') != FP32_LORA_PARENT_SHA
+                    or initialization.get('source_step') != 1040
+                    or not checkpoint.get('optimizer')):
+                raise ValueError('measured continuation must restore original R005-lineage step2 optimizer/data state')
         metadata["initialization"] = dict(initialization)
         metadata["resumed_from"] = {
             "path": str(Path(resume).resolve()),
@@ -1094,6 +1523,7 @@ def _execute_training(
     (output_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     tracker = ThroughputTracker.start()
     accumulated_loss = 0.0
+    low_sigma_samples = []
     micro_step = micro_batches_consumed
     global_step = start_step
     last_saved_step = start_step
@@ -1110,7 +1540,11 @@ def _execute_training(
             except StopIteration as exc:
                 raise RuntimeError("data factory returned an empty iterable") from exc
         profiler.set_phase("forward")
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        if config.data.low_sigma_stratification:
+            from training.data.low_sigma import observed_sample
+            low_sigma_samples.append(observed_sample(batch, micro_step))
+        saved_tensor_context = torch.autograd.graph.save_on_cpu(pin_memory=True) if saved_tensors_on_cpu else nullcontext()
+        with saved_tensor_context, torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             loss = _forward_loss(model, batch, config, device)
             scaled_loss = loss / config.training.gradient_accumulation_steps
         if not bool(torch.isfinite(loss.detach())):
@@ -1124,6 +1558,11 @@ def _execute_training(
             continue
 
         trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
+        precision_summary = None
+        if config.training.lora_parameter_dtype == "float32":
+            precision_summary = _lora_gradient_precision(model)
+            if precision_summary['lora_gradient_tensors'] != model._lora_parameter_precision['lora_tensors']:
+                raise ValueError("FP32 LoRA gradient count differs from the constructed parameter count")
         profiler.set_phase("gradient_clip")
         grad_norm = torch.nn.utils.clip_grad_norm_(trainable, config.optimizer.max_grad_norm)
         if not bool(torch.isfinite(grad_norm)):
@@ -1145,6 +1584,12 @@ def _execute_training(
             "timestamp_unix": time.time(),
             "step_profile": step_profile,
         }
+        if precision_summary is not None:
+            metrics['precision_summary'] = precision_summary
+        if config.data.low_sigma_stratification:
+            from training.data.low_sigma import summarize_samples
+            metrics['low_sigma_summary'] = summarize_samples(low_sigma_samples)
+            low_sigma_samples = []
         if global_step % config.training.log_every == 0:
             append_jsonl(output_dir / "metrics.jsonl", metrics)
             print(json.dumps(metrics, sort_keys=True))
@@ -1227,6 +1672,12 @@ def main(argv: list[str] | None = None) -> int:
         sampling_transition_from=args.sampling_transition_from,
         length_transition_from=args.length_transition_from,
         length_transition_sha256=args.length_transition_sha256,
+        length_transition_resampled=args.length_transition_resampled,
+        length_transition_verification_cache=args.length_transition_verification_cache,
+        weights_only_from=args.weights_only_from,
+        weights_only_sha256=args.weights_only_sha256,
+        base_model_path_relocated=args.base_model_path_relocated,
+        saved_tensors_on_cpu=args.saved_tensors_on_cpu,
         stop_after_step=args.stop_after_step,
         profile_runtime=args.profile_runtime,
     )

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "branch": "video",
+  "date": "2026-10-09",
+  "base_commit": "84763de691d9c165a8e114038e630058cd282603",
+  "scope": "Video training, action/reference adaptation, causal TF, ODE/DMD implementations and runtime source",
+  "publication_changes": [
+    "Private machine paths and hardware identities replaced by non-operational placeholders",
+    "Branch-specific README and implementation/status guide",
+    "Historical baseline REPRODUCTION.json preserved and explicitly scoped"
+  ],
+  "focused_cpu_tests_passed": 179,
+  "gpu_training_revalidated_for_export": false,
+  "visual_quality_passed": false,
+  "native_dmd_endpoint_confirmed_by_release_evidence": false,
+  "final_streaming_deployment_qualified": false,
+  "new_weights_datasets_private_sessions_or_media_included": false,
+  "historical_public_demo_assets_retained": true,
+  "historical_baseline_manifest": "REPRODUCTION.json"
+}

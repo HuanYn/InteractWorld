@@ -1,3 +1,4 @@
+# InterActWorld modifications: action/reference conditioning and causal-training integration.
 # InterActWorld reproduction: adapted from ABot-World; see NOTICE.
 # causal_wan2_2.py
 # 基于 Wan 2.2 结构 + Wan 2.1 Causal 版本改造
@@ -28,8 +29,13 @@ from wan.modules.model import (
     WanSelfAttention,
 )
 
-from wan.modules.attention import flash_attention
+from wan.modules.attention import (
+    flash_attention, FLASH_ATTN_2_AVAILABLE, FLASH_ATTN_3_AVAILABLE,
+)
 from wan.modules.compiled_flex import compile_sparse_flex_attention
+from utils.controlled_causal_action import (
+    causal_action_start_frame, inject_controlled_causal_action_features,
+)
 
 
 # ===== Debug helpers：只在异常/即将越界时打印，正常路径不刷日志 =====
@@ -1167,6 +1173,30 @@ class CausalWanSelfAttention(nn.Module):
 # Cross-Attention
 # =========================================================
 
+def _causal_cross_attention(q, k, v, context_lens=None):
+    """Keep FlashAttention when installed; otherwise use differentiable SDPA.
+
+    The generic dispatcher can select inference-only Sage kernels and its
+    SDPA branch ignores padding lengths. This fallback deliberately bypasses
+    both behaviors, and never changes sparse causal self-attention.
+    """
+    if q.device.type == "cuda" and (FLASH_ATTN_2_AVAILABLE or FLASH_ATTN_3_AVAILABLE):
+        return flash_attention(q, k, v, k_lens=context_lens)
+    mask = None
+    if context_lens is not None:
+        lengths = torch.as_tensor(context_lens, device=q.device)
+        if (lengths.ndim != 1 or lengths.shape[0] != q.shape[0]
+                or lengths.dtype not in (torch.int32, torch.int64)
+                or bool(((lengths < 0) | (lengths > k.shape[1])).any())):
+            raise ValueError("context_lens must contain one valid integer key length per batch item")
+        mask = torch.arange(k.shape[1], device=q.device)[None, None, None, :] < lengths[:, None, None, None]
+    output = torch.nn.functional.scaled_dot_product_attention(
+        q.to(v.dtype).transpose(1, 2), k.to(v.dtype).transpose(1, 2), v.transpose(1, 2),
+        attn_mask=mask, dropout_p=0.0, is_causal=False,
+    )
+    return output.transpose(1, 2).contiguous().to(q.dtype)
+
+
 class CausalWanCrossAttention(WanSelfAttention):
 
     def forward(self, x, context, context_lens, crossattn_cache=None):
@@ -1188,7 +1218,7 @@ class CausalWanCrossAttention(WanSelfAttention):
             k = self.norm_k(self.k(context)).view(b, -1, n, d)
             v = self.v(context).view(b, -1, n, d)
 
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        x = _causal_cross_attention(q, k, v, context_lens=context_lens)
         x = x.flatten(2)
         x = self.o(x)
         return x
@@ -1225,8 +1255,8 @@ class CausalWanI2VCrossAttention(WanI2VCrossAttention):
             k = self.norm_k(self.k(context)).view(b, -1, n, d)
             v = self.v(context).view(b, -1, n, d)
 
-        img_x = flash_attention(q, k_img, v_img, k_lens=None)
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        img_x = _causal_cross_attention(q, k_img, v_img)
+        x = _causal_cross_attention(q, k, v, context_lens=context_lens)
 
         x = x.flatten(2)
         img_x = img_x.flatten(2)
@@ -2082,7 +2112,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             visibility, mask_mod, padded_len, device, block_size,
         )
 
-    def _apply_control_adapters(self, x,  act_context=None, act_context_scale=1.0):
+    def _apply_control_adapters(self, x,  act_context=None, act_context_scale=1.0,
+                                absolute_start_frame=0):
         """复用action control adapter 逻辑；异常时打印 shape。"""
         try:
             y_action = None
@@ -2092,6 +2123,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 x_new = []
                 y_action = [self.act_control_adapter(u.unsqueeze(0)) for u in act_context]
                 for u, v in zip(x, y_action):
+                    if getattr(self, 'controlled_action_enabled', False) is True:
+                        x_new.append(inject_controlled_causal_action_features(
+                            self, u, v, absolute_start_frame=absolute_start_frame))
+                        continue
                     t_f = u.shape[2]
                     c_f = v.shape[2]
                     if t_f > c_f:
@@ -2241,6 +2276,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 ref_latents=ref_latents,
                 ref_mask=ref_mask,
                 act_context_scale=act_context_scale,
+                **({'current_start': current_start}
+                   if getattr(self, 'controlled_action_enabled', False) is True else {}),
             )
 
         if self.model_type == 'i2v':
@@ -2257,10 +2294,16 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
 
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
+        absolute_start_frame = 0
+        if getattr(self, 'controlled_action_enabled', False) is True:
+            absolute_start_frame = causal_action_start_frame(
+                current_start, x[0].shape[-2] * x[0].shape[-1],
+                temporal_patch_size=self.patch_size[0])
         x,  _ = self._apply_control_adapters(
             x,
             act_context=act_context,
             act_context_scale=act_context_scale,
+            absolute_start_frame=absolute_start_frame,
         )
 
         grid_sizes = torch.stack(
@@ -2425,6 +2468,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             frame_seqlen = x.shape[-2] * x.shape[-1] // (self.patch_size[1] * self.patch_size[2])
             print("_forward_train: x[0]", x[0].shape)
             absolute_start_frame = int(current_start) // int(frame_seqlen) if frame_seqlen > 0 else 0
+            if getattr(self, 'controlled_action_enabled', False) is True:
+                absolute_start_frame = causal_action_start_frame(
+                    current_start, frame_seqlen, temporal_patch_size=self.patch_size[0])
             mask_independent_first_frame = bool(self.independent_first_frame) and absolute_start_frame == 0
             ref_token_len = self._estimate_ref_token_len(ref_latents)
             if not bidirectional:
@@ -2444,6 +2490,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 x,
                 act_context=act_context,
                 act_context_scale=act_context_scale,
+                absolute_start_frame=absolute_start_frame,
             )
 
             grid_sizes = torch.stack(
@@ -2515,6 +2562,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                                                        "act_control_adapter") and self.act_control_adapter is not None:
                     x_new = []
                     for u, v in zip(clean_x, y_action):
+                        if getattr(self, 'controlled_action_enabled', False) is True:
+                            x_new.append(inject_controlled_causal_action_features(
+                                self, u, v, absolute_start_frame=absolute_start_frame))
+                            continue
                         t_f = u.shape[2]
                         c_f = v.shape[2]
                         if t_f > c_f:
@@ -2705,6 +2756,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         # 不要依赖 self.training，因为蒸馏/采样训练里经常是 eval() + grad enabled。
         if torch.is_grad_enabled() and kwargs.get("kv_cache", None) is not None:
             for k in ["kv_cache", "crossattn_cache", "current_start", "cache_start"]:
+                if k == "current_start" and getattr(self, 'controlled_action_enabled', False) is True:
+                    continue  # Preserve absolute first-latent protection on the grad route.
                 kwargs.pop(k, None)
             return self._forward_train(*args, **kwargs)
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from numbers import Real
 from pathlib import Path
@@ -51,7 +52,11 @@ class CausalMoBAConfig(CausalTeacherForcingConfig):
     def validate(self) -> None:
         super().validate()
         self.regularization.validate()
-        if self.data.prompt_cache_path is None:
+        inline97 = (self.data.num_frames == 97 and self.data.prompt_cache_path is None
+                    and self.data.data_factory == "training.data.action_resampled:build_resampled_action_teacher_dataloader")
+        # The base validator fixes native97 geometry/factory; artifact_hashes
+        # verifies the window97 receipt and inline scene-static policy at launch.
+        if self.data.prompt_cache_path is None and not inline97:
             raise ValueError("sequential BID requires the same explicit scene-static prompt cache as TF")
         if self.model.lora_dropout != 0:
             raise ValueError("paired sequential BID v1 fixes lora_dropout=0")
@@ -157,6 +162,7 @@ def bidirectional_flow_loss(
 def backward_microbatch(
     model: nn.Module, batch: Mapping[str, Any], config: CausalMoBAConfig,
     device: torch.device,
+    *, saved_tensors_on_cpu: bool = False,
 ) -> dict[str, float | bool]:
     """Accumulate (TF + weight*BID)/accum gradients, freeing each graph in turn.
 
@@ -164,11 +170,14 @@ def backward_microbatch(
     Weight zero calls the existing TF loss/backward only, not the BID interface.
     """
     config.regularization.validate()
+    if type(saved_tensors_on_cpu) is not bool:
+        raise ValueError("saved_tensors_on_cpu must be an explicit boolean")
     accumulation = config.training.gradient_accumulation_steps
     if isinstance(accumulation, bool) or not isinstance(accumulation, int) or accumulation <= 0:
         raise ValueError("gradient_accumulation_steps must be a positive integer")
     weight = float(config.regularization.bidirectional_weight)
-    with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+    context = torch.autograd.graph.save_on_cpu(pin_memory=True) if saved_tensors_on_cpu else nullcontext()
+    with context, torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
         loss = causal_teacher_forcing_loss(model, batch, config, device)
     if not bool(torch.isfinite(loss)):
         raise FloatingPointError("non-finite causal teacher-forcing loss")
@@ -177,7 +186,8 @@ def backward_microbatch(
     del loss
     bid_value = 0.0
     if weight > 0:
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+        context = torch.autograd.graph.save_on_cpu(pin_memory=True) if saved_tensors_on_cpu else nullcontext()
+        with context, torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
             loss = bidirectional_flow_loss(model, batch, config, device)
         if not bool(torch.isfinite(loss)):
             raise FloatingPointError("non-finite bidirectional auxiliary loss")

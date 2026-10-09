@@ -115,10 +115,7 @@ class ResampledActionDataset(PrecomputedActionDataset):
         generator = torch.Generator(device="cpu").manual_seed(spec["diffusion_seed"])
         noise = torch.randn(clean.shape, generator=generator, dtype=torch.float32)
         schedule_index = int(torch.randint(0, 1000, (1,), generator=generator).item())
-        sigma_linear = 1.0 - schedule_index / 1000.0
-        sigma = self.timestep_shift * sigma_linear / (
-            1.0 + (self.timestep_shift - 1.0) * sigma_linear
-        )
+        sigma, observations = self.noise_level(schedule_index, spec["absolute_sample_index"])
         noisy = (1.0 - sigma) * clean + sigma * noise
         target = noise - clean
         # Preserve the legacy TI2V clean-first-latent flow objective exactly.
@@ -131,7 +128,16 @@ class ResampledActionDataset(PrecomputedActionDataset):
             "target_flow": target,
             "timesteps": timesteps,
             **cached,
+            **observations,
         }
+
+    def noise_level(self, schedule_index: int, sample_index: int):
+        """Default arithmetic/draw order unchanged; opt-in subclasses add metadata."""
+        sigma_linear = 1.0 - schedule_index / 1000.0
+        sigma = self.timestep_shift * sigma_linear / (
+            1.0 + (self.timestep_shift - 1.0) * sigma_linear
+        )
+        return sigma, {}
 
 
 def build_resampled_action_teacher_dataloader(*, config: Any, training: Any) -> DataLoader:

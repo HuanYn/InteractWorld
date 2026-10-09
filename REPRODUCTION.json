@@ -1,4 +1,6 @@
 {
+  "scope_note": "Historical baseline export only; this is not the file manifest of the video branch. See SOURCE_RELEASE.json.",
+  "current_source_release": "SOURCE_RELEASE.json",
   "schema_version": 1,
   "kind": "minimal_source_reproduction",
   "source_revision": "e1f788ae9a960bd853ecccf74e6648db2aed6ca6",

@@ -241,3 +241,10 @@ checkpoints/
 
 # Operator-written revision marker for a source-only remote deployment.
 .source-revision
+
+# Local experiment and application output, never part of a source release.
+/outputs/
+/sessions/
+/reports/
+*.npy
+*.npz

@@ -704,8 +704,20 @@ class WanDiffusionWrapper(torch.nn.Module):
         history_y_action: Optional[torch.Tensor] = None,
         noisy_start_frame: int = 0,
         training_attention_mode: str = "causal",
+        velocity_only: bool = False,
+        inference_conditioning_cache=None,
 
     ) -> torch.Tensor:
+        if type(velocity_only) is not bool:
+            raise ValueError('velocity_only must be an explicit boolean')
+        if velocity_only or inference_conditioning_cache is not None:
+            if self.is_causal or self.training or torch.is_grad_enabled():
+                raise ValueError('latency fastpath requires noncausal eval under caller no_grad')
+            if (any(value is not None for value in (kv_cache, crossattn_cache, clean_x, aug_t,
+                    history_x, history_y, history_act_context, history_y_action))
+                    or classify_mode or concat_time_embeddings or updating_cache
+                    or training_attention_mode != 'causal'):
+                raise ValueError('latency fastpath supports the plain noncausal inference branch only')
         if training_attention_mode not in ("causal", "bidirectional"):
             raise ValueError(f"unknown training_attention_mode: {training_attention_mode!r}")
         if training_attention_mode == "bidirectional":
@@ -731,11 +743,27 @@ class WanDiffusionWrapper(torch.nn.Module):
         y_action = conditional_dict.get("y_action", None)
         ref_latents = conditional_dict.get("ref_latents", None)
         ref_mask = conditional_dict.get("ref_mask", None)
-        reference_kwargs = (
-            {"ref_latents": ref_latents, "ref_mask": ref_mask}
-            if self.is_causal
-            else {}
-        )
+        if self.is_causal:
+            # Preserve the existing causal reference API, including its None defaults.
+            reference_kwargs = {"ref_latents": ref_latents, "ref_mask": ref_mask}
+        elif ref_latents is not None or ref_mask is not None:
+            # Opt-in noncausal references must never be silently discarded. The
+            # WanModel validates latent geometry, batch size and patch/token limits.
+            if ref_latents is None or ref_mask is None:
+                raise ValueError('noncausal references require both ref_latents and ref_mask')
+            if not torch.is_tensor(ref_mask) or ref_mask.dtype != torch.bool:
+                raise ValueError('noncausal ref_mask must be a boolean tensor [B,K]')
+            if (any(value is not None for value in (
+                    y, clip_fea, kv_cache, crossattn_cache, inference_conditioning_cache,
+                    clean_x, aug_t, history_x, history_y, history_act_context, history_y_action))
+                    or any(value not in (None, 0, False) for value in (
+                        current_start, cache_start, updating_cache, noisy_start_frame,
+                        classify_mode, concat_time_embeddings))):
+                raise ValueError('noncausal references require the plain path without y/clip, cache, history or teacher forcing')
+            reference_kwargs = {"ref_latents": ref_latents, "ref_mask": ref_mask}
+        else:
+            # Do not add reference keywords to any legacy noncausal call.
+            reference_kwargs = {}
         if training_attention_mode == "bidirectional":
             # Do not add even a default keyword to legacy/non-causal callers.
             reference_kwargs["training_attention_mode"] = training_attention_mode
@@ -861,6 +889,8 @@ class WanDiffusionWrapper(torch.nn.Module):
                     )
                     flow_pred = flow_pred.permute(0, 2, 1, 3, 4)
                 else:
+                    fastpath_kwargs = ({'inference_conditioning_cache': inference_conditioning_cache}
+                                       if inference_conditioning_cache is not None else {})
                     flow_pred = self.model(
                         noisy_image_or_video.permute(0, 2, 1, 3, 4),
                         t=input_timestep, context=prompt_embeds,
@@ -870,7 +900,13 @@ class WanDiffusionWrapper(torch.nn.Module):
                         clip_fea=clip_fea,
                         y=y,
                         **reference_kwargs,
+                        **fastpath_kwargs,
                     ).permute(0, 2, 1, 3, 4)
+
+        if velocity_only:
+            # Euler consumes only flow_pred. Avoid an unused FP64 x0 conversion;
+            # the default and every training/causal path keep their old result.
+            return flow_pred, None
 
         pred_x0 = self._convert_flow_pred_to_x0(
             flow_pred=flow_pred.flatten(0, 1),
